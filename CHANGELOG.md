@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.2
+
+NXExtract recipe made tolerant, so a legitimate APK is never rejected for being
+a different build of the same game.
+
+- Assets are matched as `assets/*.dat` instead of a fixed `001`–`008` list: a
+  build that renumbers, adds or drops a movie file still installs.
+- Structural bounds widened everywhere (tree 8–96 files, 300 MB–1.6 GB;
+  `libchrono.so` 6–48 MB; `resources.bin` 200 MB–1.2 GB). Nothing is pinned to
+  one build's byte count.
+- Required paths reduced to what every build has: `resources.bin`, `001.dat`
+  and the shader tree. Region-dependent files (`007-en.dat`, `008.dat`) are
+  installed when present and never demanded.
+- The launcher's artefact gate matches that same list.
+- Verified with `nxextract plan` against a real retail APK: the widened recipe
+  resolves the identical 17 items / 564 MB as before.
+
+Updating from 1.0.0/1.0.1 does not re-extract anything: the installer adopts
+already-valid data and only rewrites the marker.
+
 ## 1.0.1
 
 Portability audit against the multi-device contract; every fix below prevents a

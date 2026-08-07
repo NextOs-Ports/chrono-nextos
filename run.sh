@@ -154,12 +154,14 @@ if [ -f "$GAMEDIR/extractor.json" ] && [ -f "$GAMEDIR/run-extractor.sh" ]; then
 fi
 
 # Gate de artefatos: recusar iniciar com payload incompleto, nunca pular calado.
+# So' entra aqui o que TODA build do jogo tem. Arquivo que varia por build ou
+# por regiao (007-en.dat, 008.dat, numeracao nova de .dat) NAO e' requisito:
+# exigir isso reprovaria um APK legitimo do usuario.
 for ct_required in \
   libchrono.so \
   libc++_shared.so \
   assets/resources.bin \
   assets/001.dat \
-  assets/007-en.dat \
   assets/Shaders/example_Simple.vsh
 do
   [ -s "$GAMEDIR/$ct_required" ] ||
