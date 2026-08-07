@@ -110,7 +110,29 @@ static void *ct_watchdog_thread(void *arg) {
   return NULL;
 }
 
+/* Depois que a parte segura terminou, um SIGSEGV/SIGBUS no teardown das
+ * threads da engine nao pode virar "o jogo quebrou": o save ja esta em disco e
+ * o frontend so' precisa do processo fora do caminho. Convertemos em saida
+ * limpa, registrando o motivo. */
+static void ct_shutdown_fault(int sig) {
+  const char *msg = (sig == SIGSEGV) ? "SHUTDOWN: falha no teardown (SIGSEGV) apos o save; saindo limpo\n"
+                                     : "SHUTDOWN: falha no teardown apos o save; saindo limpo\n";
+  ssize_t ignored = write(2, msg, strlen(msg));
+  (void)ignored;
+  _exit(0);
+}
+
 void ct_start_shutdown_watchdog(int seconds) {
+  struct sigaction sa;
+  memset(&sa, 0, sizeof sa);
+  sa.sa_handler = ct_shutdown_fault;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = SA_NODEFER;
+  sigaction(SIGSEGV, &sa, NULL);
+  sigaction(SIGBUS, &sa, NULL);
+  sigaction(SIGABRT, &sa, NULL);
+  sigaction(SIGFPE, &sa, NULL);
+
   const char *env = getenv("CHRONO_SHUTDOWN_DEADLINE");
   if (env) seconds = atoi(env);
   if (seconds <= 0) return;

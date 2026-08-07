@@ -48,6 +48,13 @@ Nothing here is chosen by device name: the runtime detects the ROM root, the
 real drawable size, the SDL video/audio backend the firmware opened, the pad
 mapping supplied by PortMaster, and adapts.
 
+### Performance
+
+Measured on an R36S (Cortex-A35, Mali-G31, 640×480): **58–60 fps** in menus and
+indoor scenes, **~37 fps** on the overworld, which is where the engine is
+heaviest on this hardware. Peak resident memory is **350 MB of 639 MB**, so no
+texture or scale workaround is needed.
+
 ## Controls
 
 Native pad through the game's own `GameController` path — Xbox layout.
@@ -137,6 +144,13 @@ aparelhos".
 Nada aqui é escolhido pelo nome do aparelho: o runtime detecta a raiz de ROM, o
 tamanho real do drawable, o backend de vídeo/áudio que o firmware abriu e o
 mapeamento de controle entregue pelo PortMaster.
+
+### Desempenho
+
+Medido num R36S (Cortex-A35, Mali-G31, 640×480): **58–60 fps** nos menus e nas
+cenas internas, **~37 fps** no mapa-múndi, que é onde a engine pesa mais nesse
+hardware. O pico de memória residente é de **350 MB de 639 MB**, então nenhuma
+gambiarra de textura ou de escala foi necessária.
 
 ### Controles
 
