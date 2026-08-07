@@ -13,3 +13,13 @@ e aceita builds novas sem mudanca de codigo):
   v2.1.4 / build_date 2023/04/26  libchrono.so=87ed1b8e6236a2f6b7d245c9efdd49da9fc77395c480f71254285542302112b8
                                   libc++_shared.so=ad74bf43eb1fd576518168f664ad16a74e00eeda9595875c33dd87f6dd197869
                                   libencrypt.so=7107128e59d91b38f06129e10aa414db6cfe0f3de4701031d9edb9a80fb33b5a
+
+Formas de entrada validadas nesta receita:
+  - APK solto da Play (v2.1.4) ......................... aceito
+  - o mesmo APK dentro de um .xapk (bundle) ............ aceito
+  - pacote de OUTRO jogo ............................... recusado, diagnostico claro
+  - APK do Chrono Trigger com arvore de assets diferente
+    ("outra build") .................................... recusado com
+      "payload tree android-cocos-assets failed count/size validation";
+      o launcher traduz isso para "e' do Chrono Trigger, mas nao e' uma build
+      que esta receita conhece".

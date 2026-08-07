@@ -140,10 +140,17 @@ chmod +x "$GAMEDIR/run-extractor.sh" "$GAMEDIR/nxextract-runtime-env.sh" \
 if [ -f "$GAMEDIR/extractor.json" ] && [ -f "$GAMEDIR/run-extractor.sh" ]; then
   command -v python3 >/dev/null 2>&1 ||
     runtime_error "este firmware nao tem python3; o instalador de dados nao pode rodar"
-  NXEXTRACT_GAME_DIR=$GAMEDIR \
-    NXEXTRACT_FIRMWARE_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu:/usr/local/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib:/lib \
-    bash "$GAMEDIR/run-extractor.sh" ||
-    runtime_error "dados do jogo ausentes ou invalidos. Coloque o APK do Chrono Trigger que voce possui (arm64) em ports/chrono/gamedata/ e abra de novo"
+  if ! NXEXTRACT_GAME_DIR=$GAMEDIR \
+       NXEXTRACT_FIRMWARE_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu:/usr/local/lib:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib:/lib \
+       bash "$GAMEDIR/run-extractor.sh"; then
+    # Diagnostico honesto: se o extrator RECONHECEU o pacote do Chrono Trigger
+    # e mesmo assim reprovou, o arquivo e' de outra build — dizer isso, em vez
+    # de "nao encontrei nada".
+    if grep -q 'package com[.]square_enix' "$GAMEDIR/nxextract.log" 2>/dev/null; then
+      runtime_error "o arquivo em gamedata/ e' do Chrono Trigger, mas nao e' uma build que esta receita conhece (o conteudo nao bate). Tente o APK original da sua conta; detalhes em nxextract.log"
+    fi
+    runtime_error "dados do jogo ausentes. Coloque o APK do Chrono Trigger que voce possui (arm64) em ports/chrono/gamedata/ e abra de novo; detalhes em nxextract.log"
+  fi
 fi
 
 # Gate de artefatos: recusar iniciar com payload incompleto, nunca pular calado.
