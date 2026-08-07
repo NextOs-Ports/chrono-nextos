@@ -18,6 +18,8 @@ void ct_exit_chord_open(void);
 void ct_exit_chord_poll(void);
 void ct_exit_chord_close(void);
 
+/* Abre o SDL_INIT_AUDIO em separado do video: falha de audio nunca e' fatal. */
+void ct_init_audio_subsystem(void);
 void ct_log_video_profile(struct SDL_Window *window, int drawable_w, int drawable_h);
 int ct_needs_finish_before_swap(void);
 

@@ -1,6 +1,27 @@
 # Changelog
 
-## 1.0.0 — unreleased
+## 1.0.1
+
+Portability audit against the multi-device contract; every fix below prevents a
+"black screen" or "does not start" on hardware the release was never run on.
+
+- **Video and audio now initialise as independent subsystems.** A single
+  `SDL_Init(VIDEO|AUDIO|...)` meant a dead inherited PulseAudio took the whole
+  boot down and the port never drew a frame. Audio failure is now scoped: the
+  game starts, with picture, and says in the log that it has no sound.
+- **Audio ladder**: `dummy` and `disk` no longer count as success, and one
+  logged retry drops an invalid inherited `SDL_AUDIODRIVER`/`PULSE_SERVER`
+  before giving up.
+- **EGLConfig fallback ladder** (alpha 8→0, depth/stencil 24/8→16/0→0/0). The
+  first rung is exactly the configuration validated on Mali-450 and on the R36S;
+  a driver that refuses it now gets the next rung instead of a fatal error.
+- **Desktop GL is rejected.** If the driver hands back a non-ES context, the
+  context is recreated once against the GLES driver; Cocos2d-x shaders are GLSL
+  ES and would otherwise render black.
+- **Inherited `SDL_VIDEODRIVER`** that fails a real probe is dropped once, giving
+  autodetection back to SDL — the backend is never chosen by us.
+
+## 1.0.0
 
 First universal BYO-data release of the Chrono Trigger compatibility loader.
 

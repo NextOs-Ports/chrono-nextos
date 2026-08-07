@@ -305,6 +305,7 @@ static void my_onKeyDown(void *self, void *ctrl, int key, void *ev) {
 }
 
 /* screenshot confiavel via glReadPixels (fb0 falha durante render Mali). */
+extern const unsigned char *glGetString(unsigned name);
 extern void glReadPixels(int x, int y, int w, int h, unsigned fmt, unsigned type, void *px);
 extern void glFinish(void);
 static void chrono_dump_shot(int w, int h, int frame) {
@@ -339,28 +340,96 @@ int main(int argc, char *argv[]) {
   ct_install_signal_handlers();
   debugPrintf("RAM MemTotal=%ld kB\n", ct_mem_total_kb());
 
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0)
-    fatal_error("SDL_Init: %s", SDL_GetError());
+  /* VIDEO e AUDIO sao subsistemas INDEPENDENTES (audio-backend.md §2). Um
+     PulseAudio herdado e morto ja derrubou o SDL_Init inteiro e o jogo nao
+     abria — custou release corretiva no Oceanhorn v1.0.2 e no Horizon v1.0.3.
+     Aqui: sem video nao ha jogo (fatal); sem audio o jogo abre mudo e diz. */
+  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+    /* Backend HERDADO invalido: uma unica nova tentativa com a variavel
+       removida, devolvendo a autodeteccao ao SDL (video-backend.md §1, SOR4).
+       Nao escolhemos outro backend — apenas paramos de impor o herdado. */
+    const char *inherited = getenv("SDL_VIDEODRIVER");
+    debugPrintf("VIDEO: SDL_Init falhou (%s); herdado=%s\n", SDL_GetError(),
+                inherited ? inherited : "nenhum");
+    if (!inherited) fatal_error("SDL_Init: %s", SDL_GetError());
+    unsetenv("SDL_VIDEODRIVER");
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0)
+      fatal_error("SDL_Init: %s", SDL_GetError());
+    debugPrintf("VIDEO: autodeteccao aceita apos remover o SDL_VIDEODRIVER herdado\n");
+  }
+  ct_init_audio_subsystem();
+
   SDL_DisplayMode dm;
   if (SDL_GetDesktopDisplayMode(0, &dm) != 0)
     fatal_error("SDL_GetDesktopDisplayMode: %s", SDL_GetError());
 
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-  SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-  SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-  SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-  SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+  /* Escada de EGLConfig (video-backend.md §4): a PRIMEIRA linha e' exatamente o
+     que o port ja validou no Mali-450 e no R36S; as seguintes so' entram se o
+     driver recusar a anterior. Driver sem RGBA8888/D24S8 deixava de abrir. */
+  static const struct { int alpha, depth, stencil; } ladder[] = {
+    { 8, 24, 8 }, { 8, 16, 0 }, { 8, 0, 0 }, { 0, 24, 8 }, { 0, 16, 0 }, { 0, 0, 0 }
+  };
+  SDL_Window *window = NULL;
+  SDL_GLContext glc = NULL;
+  for (size_t attempt = 0; attempt < sizeof ladder / sizeof ladder[0]; ++attempt) {
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, ladder[attempt].alpha);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, ladder[attempt].depth);
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, ladder[attempt].stencil);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
-  SDL_Window *window = SDL_CreateWindow("Chrono Trigger",
-      SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, dm.w, dm.h,
-      SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+    if (!window) {
+      window = SDL_CreateWindow("Chrono Trigger",
+          SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, dm.w, dm.h,
+          SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
+      if (!window) {
+        debugPrintf("VIDEO: SDL_CreateWindow falhou com A%d D%d S%d (%s)\n",
+                    ladder[attempt].alpha, ladder[attempt].depth,
+                    ladder[attempt].stencil, SDL_GetError());
+        continue;
+      }
+    }
+    glc = gl_create_context_guarded(window);
+    if (glc) {
+      if (attempt)
+        debugPrintf("VIDEO: contexto obtido na tentativa %zu (A%d D%d S%d)\n",
+                    attempt + 1, ladder[attempt].alpha, ladder[attempt].depth,
+                    ladder[attempt].stencil);
+      /* Mesa pode devolver DESKTOP GL: os shaders do Cocos sao GLSL ES e a tela
+         fica preta (video-backend.md §5). Validar depois de criar e, se vier
+         desktop, refazer UMA vez pedindo explicitamente o driver GLES. */
+      const char *gl_version = (const char *)glGetString(0x1F02u /*GL_VERSION*/);
+      if (gl_version && !strstr(gl_version, "OpenGL ES")) {
+        debugPrintf("VIDEO: driver devolveu contexto DESKTOP (%s); refazendo com "
+                    "o driver GLES\n", gl_version);
+        SDL_GL_DeleteContext(glc);
+        glc = NULL;
+        SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, "1");
+        glc = gl_create_context_guarded(window);
+        gl_version = glc ? (const char *)glGetString(0x1F02u) : NULL;
+        if (!glc || (gl_version && !strstr(gl_version, "OpenGL ES"))) {
+          debugPrintf("VIDEO: ainda sem contexto GLES (%s); tentando a proxima "
+                      "config\n", gl_version ? gl_version : SDL_GetError());
+          if (glc) { SDL_GL_DeleteContext(glc); glc = NULL; }
+          SDL_DestroyWindow(window);
+          window = NULL;
+          continue;
+        }
+      }
+      break;
+    }
+    debugPrintf("VIDEO: contexto recusado com A%d D%d S%d (%s)\n",
+                ladder[attempt].alpha, ladder[attempt].depth,
+                ladder[attempt].stencil, SDL_GetError());
+    SDL_DestroyWindow(window);
+    window = NULL;
+  }
   if (!window) fatal_error("SDL_CreateWindow: %s", SDL_GetError());
-  SDL_GLContext glc = gl_create_context_guarded(window);
   if (!glc) fatal_error("SDL_GL_CreateContext: %s", SDL_GetError());
   /* O DRAWABLE REAL manda: 1280x720 no Mali-450 fbdev, 640x480 no R36S. Nada
      de resolucao cravada — tudo (nativeInit, toque injetado, screenshot) usa

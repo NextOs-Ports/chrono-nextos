@@ -249,6 +249,54 @@ void ct_exit_chord_close(void) {
   g_evdev_start = 0;
 }
 
+/* ----------------------------------------------------------------- audio --- */
+
+/* Escada de audio (audio-backend.md §2 e §3), em escopo LOCAL e sempre logada:
+ *   1. herdado/auto primeiro — e' o que o firmware escolheu;
+ *   2. `dummy`/`disk` NAO contam como sucesso, mesmo quando o SDL diz OK;
+ *   3. uma unica nova tentativa depois de falha REAL, removendo os valores
+ *      herdados invalidos (nao escolhemos backend, devolvemos a autodeteccao);
+ *   4. se nada abrir, o jogo segue COM VIDEO e sem som, dizendo o motivo.
+ * Nunca fatal: audio morto jamais pode derrubar a tela. */
+static int ct_audio_driver_is_real(void) {
+  const char *driver = SDL_GetCurrentAudioDriver();
+  if (!driver) return 0;
+  return strcmp(driver, "dummy") != 0 && strcmp(driver, "disk") != 0;
+}
+
+void ct_init_audio_subsystem(void) {
+  if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0 && ct_audio_driver_is_real()) {
+    debugPrintf("AUDIO: subsistema aberto no backend %s\n",
+                SDL_GetCurrentAudioDriver());
+    return;
+  }
+
+  const char *driver = SDL_GetCurrentAudioDriver();
+  const char *inherited_drv = getenv("SDL_AUDIODRIVER");
+  const char *inherited_srv = getenv("PULSE_SERVER");
+  debugPrintf("AUDIO: primeira tentativa recusada (backend=%s erro=%s "
+              "SDL_AUDIODRIVER=%s PULSE_SERVER=%s)\n",
+              driver ? driver : "nenhum", SDL_GetError(),
+              inherited_drv ? inherited_drv : "nenhum",
+              inherited_srv ? inherited_srv : "nenhum");
+
+  SDL_QuitSubSystem(SDL_INIT_AUDIO);
+  if (inherited_drv) unsetenv("SDL_AUDIODRIVER");
+  if (inherited_srv) unsetenv("PULSE_SERVER");
+
+  if (SDL_InitSubSystem(SDL_INIT_AUDIO) == 0 && ct_audio_driver_is_real()) {
+    debugPrintf("AUDIO: aberto na segunda tentativa, backend %s (o herdado "
+                "estava invalido)\n", SDL_GetCurrentAudioDriver());
+    return;
+  }
+
+  driver = SDL_GetCurrentAudioDriver();
+  debugPrintf("AUDIO: nenhum backend real disponivel (backend=%s erro=%s); o "
+              "jogo segue COM VIDEO e SEM SOM\n",
+              driver ? driver : "nenhum", SDL_GetError());
+  SDL_QuitSubSystem(SDL_INIT_AUDIO);
+}
+
 /* ------------------------------------------------------------ diagnostico --- */
 
 extern const unsigned char *glGetString(unsigned name);
