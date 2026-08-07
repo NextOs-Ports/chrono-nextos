@@ -1,0 +1,13 @@
+.build/
+assets/
+libchrono.so
+libc++_shared.so
+libencrypt.so
+gamedata/*
+!gamedata/README.txt
+userdata/
+shot_*.raw
+out.pcm
+*.log
+.nxextract*
+__pycache__/

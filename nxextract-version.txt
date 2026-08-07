@@ -1,0 +1,15 @@
+1.2.3
+upstream: nextos_ports_android/suportando_outros_devices/extrator-universal @ 1.2.3
+nxextract.py sha256=6e65a741afb4dc02433e0c0bf873b1249371c2e41829dfffef962c1890bba729
+nxextract-ui sha256=046afb583f5a211c946495e639409f81d9cfec706788eeccb7924b0e8e5a50b6
+nxextract-runtime-env.sh sha256=332919a9960d4317563b647f9932d1a4367da147a425fe2f78eafd706f01563f
+run-extractor.sh sha256=3c61f638a25f0ca9c5c5a94d33660886aaff17a18347c9e954afd4b0e9b3efba
+extractor.json sha256=dc0fe02578cdcf767b196780ffe3d8e245f434e061dfcafeb015ef0b6ba22746
+patches locais: 0
+
+Builds da Play conhecidas e validadas para esta receita (sha256 do payload
+interno, registro de suporte — NAO sao gate: a receita valida por ESTRUTURA
+e aceita builds novas sem mudanca de codigo):
+  v2.1.4 / build_date 2023/04/26  libchrono.so=87ed1b8e6236a2f6b7d245c9efdd49da9fc77395c480f71254285542302112b8
+                                  libc++_shared.so=ad74bf43eb1fd576518168f664ad16a74e00eeda9595875c33dd87f6dd197869
+                                  libencrypt.so=7107128e59d91b38f06129e10aa414db6cfe0f3de4701031d9edb9a80fb33b5a
