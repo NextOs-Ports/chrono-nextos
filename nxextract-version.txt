@@ -4,7 +4,7 @@ nxextract.py sha256=6e65a741afb4dc02433e0c0bf873b1249371c2e41829dfffef962c1890bb
 nxextract-ui sha256=046afb583f5a211c946495e639409f81d9cfec706788eeccb7924b0e8e5a50b6
 nxextract-runtime-env.sh sha256=332919a9960d4317563b647f9932d1a4367da147a425fe2f78eafd706f01563f
 run-extractor.sh sha256=3c61f638a25f0ca9c5c5a94d33660886aaff17a18347c9e954afd4b0e9b3efba
-extractor.json sha256=dc0fe02578cdcf767b196780ffe3d8e245f434e061dfcafeb015ef0b6ba22746
+extractor.json sha256=5bfded809a7b7c6555e3cd95c0b7839cc1651521da61b64ca6a072ca5310aaa0
 patches locais: 0
 
 Builds da Play conhecidas e validadas para esta receita (sha256 do payload
@@ -18,8 +18,8 @@ Formas de entrada validadas nesta receita:
   - APK solto da Play (v2.1.4) ......................... aceito
   - o mesmo APK dentro de um .xapk (bundle) ............ aceito
   - pacote de OUTRO jogo ............................... recusado, diagnostico claro
-  - APK do Chrono Trigger com arvore de assets diferente
-    ("outra build") .................................... recusado com
-      "payload tree android-cocos-assets failed count/size validation";
-      o launcher traduz isso para "e' do Chrono Trigger, mas nao e' uma build
-      que esta receita conhece".
+  - APK do Chrono Trigger de OUTRA build ............... ACEITO desde a receita
+      2.x-universal-2: a arvore casa por glob (assets/*.dat) e as faixas sao
+      estruturais, nao os bytes de uma build. So' e' recusado o pacote a que
+      faltar o que TODA build tem (resources.bin, 001.dat, a arvore de Shaders)
+      ou cuja lib nao seja arm64 — e ai' o launcher explica o motivo.
