@@ -161,13 +161,56 @@ static int map_key_android(SDL_Keycode k) {
 /* SELECT+START pelo caminho SDL. Junto com o combo cru do evdev
    (ct_exit_chord_poll) e com o SIGTERM, cai no MESMO pedido de shutdown. */
 static int g_chord_select, g_chord_start;
+
 static void track_exit_chord(int sdl_button, int pressed) {
   if (sdl_button == SDL_CONTROLLER_BUTTON_BACK) g_chord_select = pressed;
   else if (sdl_button == SDL_CONTROLLER_BUTTON_START) g_chord_start = pressed;
   if (g_chord_select && g_chord_start) ct_request_exit("SELECT+START (SDL)");
 }
 
+/* LATCH: um toque mais curto que um frame chega como DOWN e UP no MESMO
+   SDL_PollEvent. A engine so' le o estado 1x por frame (GameController::update),
+   entao o toque sumiria. Guardamos o release para o frame seguinte. */
+#define CT_BUTTONS 24
+static unsigned char g_btn_down[CT_BUTTONS];
+static unsigned char g_btn_pending_release[CT_BUTTONS];
+static unsigned char g_btn_down_this_frame[CT_BUTTONS];
+
+static void send_button(int sdl_button, int pressed);
+
+static void flush_pending_releases(void) {
+  for (int b = 0; b < CT_BUTTONS; b++) {
+    g_btn_down_this_frame[b] = 0;
+    if (g_btn_pending_release[b]) {
+      g_btn_pending_release[b] = 0;
+      send_button(b, 0);
+    }
+  }
+}
+
+/* Nenhum botao pode ficar preso quando o foco/controle vai embora. */
+static void release_all_buttons(void) {
+  for (int b = 0; b < CT_BUTTONS; b++) {
+    g_btn_pending_release[b] = 0;
+    if (g_btn_down[b]) send_button(b, 0);
+  }
+  g_chord_select = g_chord_start = 0;
+}
+
 static void send_button(int sdl_button, int pressed) {
+  if (sdl_button >= 0 && sdl_button < CT_BUTTONS) {
+    if (pressed) {
+      g_btn_down[sdl_button] = 1;
+      g_btn_down_this_frame[sdl_button] = 1;
+    } else {
+      if (g_btn_down_this_frame[sdl_button]) {
+        /* solta so' no proximo frame: a engine precisa VER o press. */
+        g_btn_pending_release[sdl_button] = 1;
+        return;
+      }
+      g_btn_down[sdl_button] = 0;
+    }
+  }
   track_exit_chord(sdl_button, pressed);
   if (g_use_keyboard) {
     if (!nativeKeyEvent) return;
@@ -461,6 +504,7 @@ int main(int argc, char *argv[]) {
   SDL_Event e;
   int announce_at = 120; /* ~2 s de cena viva antes de anunciar o controle */
   while (!ct_exit_requested()) {
+    flush_pending_releases();
     ct_exit_chord_poll();
     if (announce_at > 0 && --announce_at == 0 && ctrlConnected && !g_use_keyboard) {
       ctrlConnected(g_env, NULL, g_vendor, 0);
@@ -473,10 +517,13 @@ int main(int argc, char *argv[]) {
           open_gamepad();
           if (ctrlConnected && !g_use_keyboard) ctrlConnected(g_env, NULL, g_vendor, 0);
           break;
+        case SDL_WINDOWEVENT:
+          if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) release_all_buttons();
+          break;
         case SDL_CONTROLLERDEVICEREMOVED:
           /* Hotplug/perda de foco nao pode deixar direcao presa. */
+          release_all_buttons();
           drop_gamepad(e.cdevice.which);
-          g_chord_select = g_chord_start = 0;
           debugPrintf("Gamepad instance=%d removido\n", (int)e.cdevice.which);
           break;
         case SDL_KEYDOWN: case SDL_KEYUP: {

@@ -15,7 +15,11 @@ publishes it on the device.
 
 ![Title screen](screenshots/01-title.png)
 ![Main menu in English](screenshots/02-menu.png)
-![Gameplay](screenshots/03-gameplay.png)
+![Overworld](screenshots/03-gameplay.png)
+![Crono's house](screenshots/04-crono-house.png)
+![In-game menu](screenshots/05-ingame-menu.png)
+
+All captures come from the game running on an R36S at 640×480.
 
 ## Community
 
@@ -36,7 +40,7 @@ Support is stated by **level of evidence**, never as "all devices".
 | Device / firmware | Video | Evidence |
 |---|---|---|
 | R36S / RG351MP class — ArkOS (AArch64, glibc 2.30, KMSDRM, 640×480, 639 MB RAM) | KMSDRM + GLES2 | **physically validated** on this release |
-| NextOS Elite (Amlogic, Mali-450 fbdev, 1280×720) | SDL `mali` + GLES2 | **physically validated** on this release |
+| NextOS Elite (Amlogic, Mali-450 fbdev, 1280×720) | SDL `mali` + GLES2 | **physically validated** on the original release of this port; the universal build shares the same executable and is pending a regression pass on that hardware |
 | Other AArch64 CFWs with SDL2 + GLES2 + FreeType (ROCKNIX, muOS, Knulli/Batocera on 64-bit userland) | detected at runtime | **route designed, not yet validated** — the launcher probes and reports; device reports welcome on Discord |
 | Any **32-bit (ARMHF) userland** | — | **not supported.** The original game libraries exist only as `arm64-v8a`; there is no 32-bit build to load. The launcher refuses to start and says so. |
 
@@ -126,7 +130,7 @@ aparelhos".
 | Aparelho / firmware | Vídeo | Evidência |
 |---|---|---|
 | R36S / classe RG351MP — ArkOS (AArch64, glibc 2.30, KMSDRM, 640×480, 639 MB de RAM) | KMSDRM + GLES2 | **validado fisicamente** nesta release |
-| NextOS Elite (Amlogic, Mali-450 fbdev, 1280×720) | SDL `mali` + GLES2 | **validado fisicamente** nesta release |
+| NextOS Elite (Amlogic, Mali-450 fbdev, 1280×720) | SDL `mali` + GLES2 | **validado fisicamente** na release original deste port; o build universal usa o mesmo executável e está pendente de regressão nesse hardware |
 | Outros CFWs AArch64 com SDL2 + GLES2 + FreeType (ROCKNIX, muOS, Knulli/Batocera em userland 64 bits) | detectado em runtime | **rota projetada, ainda não validada** — o launcher sonda e registra; relatos são bem-vindos no Discord |
 | Qualquer userland **32 bits (ARMHF)** | — | **não suportado.** As bibliotecas originais do jogo só existem em `arm64-v8a`; não há build 32 bits para carregar. O launcher recusa iniciar e explica o motivo. |
 
