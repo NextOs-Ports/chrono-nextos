@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.0.3
+
+The frame handed to the panel is now opaque. A player on an RG34XX-SP (muOS,
+Mali-G31, SDL `mali` backend) reported that the screen never comes back after
+the title fades out — with the engine plainly alive in the log: the scene
+transition happens and the menu labels are built.
+
+- **The backbuffer alpha is forced opaque immediately before the present.**
+  Cocos leaves the game's own alpha in the default framebuffer. Measured on a
+  Mali-450 at 1280×720: the menu frame carries **alpha 0 on 78.5 % of its
+  pixels** and alpha 255 only where there is artwork; during the title fade it
+  reaches 97.6 %. A compositor that ignores per-pixel alpha — the Amlogic OSD
+  as NextOS configures it, and the opaque KMSDRM plane on ArkOS, the two
+  devices this port was validated on — shows the picture anyway. A compositor
+  that honours alpha reads the same frame as almost entirely transparent, and
+  the panel goes black exactly when the title disappears.
+- The clear reads the bound draw framebuffer, binds 0, writes **only** the
+  alpha channel and puts back what it found, then logs once that it actually
+  ran. A GLES3 driver can reach the swap with a non-zero FBO bound, which would
+  send the clear to the FBO instead of the backbuffer and leave the flag on
+  while nothing is fixed. The reporting device is GLES 3.2.
+- `CHRONO_OPAQUE=0` turns it off for bench comparison.
+
+Measured after the change: alpha is **255 on 100 % of the frame** and the RGB
+content is byte-for-byte the same as before (21.4 % non-black on the menu, both
+runs) — the clear touches nothing but alpha. Frame rate on the R36S over 150 s
+per side: **60.0 fps steady with the fix, 42–45 fps without it**.
+
+Also in this release: the Mali-450 regression pass is done, and the device
+table now says so.
+
+**Honest limit:** the port has no RG34XX-SP. This fix removes a measured defect
+that explains the report on the hardware we do have; it has not been run on the
+device that failed. Reports on Discord are welcome.
+
 ## 1.0.2
 
 NXExtract recipe made tolerant, so a legitimate APK is never rejected for being

@@ -308,6 +308,76 @@ static void my_onKeyDown(void *self, void *ctrl, int key, void *ev) {
 extern const unsigned char *glGetString(unsigned name);
 extern void glReadPixels(int x, int y, int w, int h, unsigned fmt, unsigned type, void *px);
 extern void glFinish(void);
+
+/* ------------------------------------------------- scanout OPACO no present --
+ * O Cocos deixa no backbuffer o alpha do PROPRIO jogo. Medido neste port no
+ * Mali-450: a tela de menu sai com alpha 0 em 78,5% dos pixels e alpha 255 so'
+ * onde ha arte; durante o fade do titulo chega a 97,6% de alpha 0.
+ *
+ * Compositor que IGNORA o alpha por pixel mostra a imagem assim mesmo -- e' o
+ * caso do OSD do Amlogic como o NextOS o configura e do plano opaco do KMSDRM
+ * no ArkOS, os dois aparelhos onde o port foi validado. Compositor que HONRA o
+ * alpha entende a mesma tela como quase toda transparente e o painel fica
+ * PRETO exatamente depois de o titulo desaparecer.
+ *
+ * Mesmo mecanismo ja pago no Horizon Chase, no LSWTFA e nos quatro Zenonia,
+ * que forcam o alpha opaco antes do swap. Aqui faltava.
+ *
+ * ARMADILHA (custou a v1.2.0 do Horizon Chase): o driver GLES3 chega no swap
+ * com um FBO != 0 amarrado, e o clear vai parar no FBO em vez do backbuffer --
+ * a flag fica ligada e o conserto nao acontece. Por isso lemos o desenho
+ * amarrado, trocamos por 0, limpamos SO' o alpha e devolvemos o que estava; e
+ * logamos UMA vez que rodou de fato, com o FBO que estava la. */
+extern void glColorMask(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
+extern void glClear(unsigned mask);
+extern void glClearColor(float r, float g, float b, float a);
+extern void glBindFramebuffer(unsigned target, unsigned framebuffer);
+extern void glGetIntegerv(unsigned pname, int *params);
+extern void glGetFloatv(unsigned pname, float *params);
+extern unsigned char glIsEnabled(unsigned cap);
+extern void glEnable(unsigned cap);
+extern void glDisable(unsigned cap);
+
+#define CT_GL_SCISSOR_TEST      0x0C11u
+#define CT_GL_COLOR_CLEAR_VALUE 0x0C22u
+#define CT_GL_COLOR_BUFFER_BIT  0x4000u
+#define CT_GL_FRAMEBUFFER       0x8D40u
+/* 0x8CA6 e' GL_FRAMEBUFFER_BINDING no ES2 e GL_DRAW_FRAMEBUFFER_BINDING no
+   ES3: mesmo valor, entao a consulta serve nos dois. */
+#define CT_GL_FRAMEBUFFER_BINDING 0x8CA6u
+
+static void ct_force_opaque_scanout(void) {
+  static int enabled = -1;
+  if (enabled < 0) {
+    const char *e = getenv("CHRONO_OPAQUE");   /* =0 desliga, so' p/ comparar */
+    enabled = e ? (atoi(e) != 0) : 1;
+    if (!enabled) debugPrintf("VIDEO scanout opaco DESLIGADO por CHRONO_OPAQUE=0\n");
+  }
+  if (!enabled) return;
+
+  int prev_fb = 0;
+  glGetIntegerv(CT_GL_FRAMEBUFFER_BINDING, &prev_fb);
+  unsigned char scissor = glIsEnabled(CT_GL_SCISSOR_TEST);
+  float cc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+  glGetFloatv(CT_GL_COLOR_CLEAR_VALUE, cc);
+
+  if (scissor) glDisable(CT_GL_SCISSOR_TEST);
+  if (prev_fb) glBindFramebuffer(CT_GL_FRAMEBUFFER, 0u);
+  glColorMask(0, 0, 0, 1);
+  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+  glClear(CT_GL_COLOR_BUFFER_BIT);
+  glColorMask(1, 1, 1, 1);
+  glClearColor(cc[0], cc[1], cc[2], cc[3]);
+  if (prev_fb) glBindFramebuffer(CT_GL_FRAMEBUFFER, (unsigned)prev_fb);
+  if (scissor) glEnable(CT_GL_SCISSOR_TEST);
+
+  static int logged = 0;
+  if (!logged) {
+    logged = 1;
+    debugPrintf("VIDEO scanout opaco aplicado (FBO amarrado no swap=%d, "
+                "scissor=%d)\n", prev_fb, (int)scissor);
+  }
+}
 static void chrono_dump_shot(int w, int h, int frame) {
   size_t n = (size_t)w * h * 4;
   unsigned char *buf = malloc(n);
@@ -681,6 +751,11 @@ int main(int argc, char *argv[]) {
     /* refill de audio agora roda na thread dedicada do opensles_shim
        (desacoplado do framerate) -> sem gagueira por hitch de frame. */
     nativeRender(g_env, NULL);
+
+    /* Antes de qualquer leitura ou present: o que vai pro scanout tem que ser
+       opaco. Fica ANTES das capturas de proposito -- assim o shot mostra o que
+       o painel recebe, e nao so' o que a engine desenhou. */
+    ct_force_opaque_scanout();
 
     /* CHRONO_SHOTS="200,600,1200": captura glReadPixels nesses frames, SEM
        injetar nada. glReadPixels precisa vir ANTES do swap. */
