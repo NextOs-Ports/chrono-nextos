@@ -6,6 +6,8 @@
  */
 
 #include <SDL2/SDL.h>
+
+#include "ct_framework.h"
 #include <math.h>
 #include <pthread.h>
 #include <stdlib.h>
@@ -15,7 +17,6 @@
 
 #include "ct_platform.h"
 #include "opensles_shim.h"
-#include "so_util.h"
 #include "util.h"
 
 #define MAX_PLAYERS 16
@@ -622,12 +623,17 @@ static void ensure_audio_initialized(void) {
   if (g_audio_dev == 0) {
     debugPrintf("opensles_shim: SDL_OpenAudioDevice failed: %s\n",
                 SDL_GetError());
+    ct_framework_audio_device_failed();
     g_audio_initialized = 1;
     return;
   }
 
   debugPrintf("opensles_shim: SDL audio opened: %dHz %dch %d samples\n",
               have.freq, have.channels, have.samples);
+  ct_framework_audio_device_opened((unsigned int)g_audio_dev, have.freq,
+                                   (unsigned int)have.format,
+                                   (unsigned int)have.channels,
+                                   (unsigned int)have.samples);
   SDL_PauseAudioDevice(g_audio_dev, 0);
   g_audio_initialized = 1;
 
@@ -1017,10 +1023,8 @@ static SLresult bq_RegisterCallback(void *self, slBufferQueueCallback callback,
 static SLresult bq_GetState_or_RegisterCallback(void *self, void *arg1,
                                                 void *arg2) {
   uintptr_t maybe_callback = (uintptr_t)arg1;
-  uintptr_t text = (uintptr_t)text_base;
 
-  if (text_base && maybe_callback >= text &&
-      maybe_callback < text + text_size) {
+  if (ct_framework_active_guest_contains(maybe_callback)) {
     return bq_RegisterCallback(self, (slBufferQueueCallback)arg1, arg2);
   }
 

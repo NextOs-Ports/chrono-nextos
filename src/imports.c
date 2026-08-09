@@ -26,6 +26,7 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/utsname.h>
@@ -39,8 +40,8 @@
 #include <SDL2/SDL.h>
 
 #include "imports.h"
+#include "ct_framework.h"
 #include "opensles_shim.h"
-#include "so_util.h"
 #include "util.h"
 
 #undef feof
@@ -80,14 +81,14 @@ static char *sf_fgets(char *s, int n, void *f) { return fgets(s, n, map_sf(f)); 
 extern uintptr_t __cxa_atexit;
 extern uintptr_t __cxa_finalize;
 
-extern void *text_base;
 static void __stack_chk_fail_stub(void) {
   uintptr_t tls = 0;
   __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tls));
   uintptr_t g = tls ? *(uintptr_t *)(tls + 0x28) : 0;
   void *ra = __builtin_return_address(0);
   debugPrintf("__stack_chk_fail! caller=%p (libchrono+0x%lx) tls+0x28=0x%lx\n",
-              ra, (unsigned long)((uintptr_t)ra - (uintptr_t)text_base),
+              ra, (unsigned long)((uintptr_t)ra -
+                                  ct_framework_active_guest_base()),
               (unsigned long)g);
 }
 
@@ -205,6 +206,25 @@ static int my_open(const char *pathname, int flags, ...) {
 
 static int my_open_2(const char *pathname, int flags) {
   return open(resolve_android_path(pathname), flags);
+}
+
+/* glibc <= 2.32 does not export the plain stat/lstat/fstat symbols used by
+ * this Bionic guest.  The approved AArch64 Sonic adapter uses the raw kernel
+ * entry points as well: on this ABI the kernel stat layout is the layout the
+ * guest expects.  Resolve Android paths before path-based calls. */
+static int bionic_stat_fake(const char *pathname, void *buffer) {
+  return (int)syscall(SYS_newfstatat, AT_FDCWD,
+                      resolve_android_path(pathname), buffer, 0);
+}
+
+static int bionic_lstat_fake(const char *pathname, void *buffer) {
+  return (int)syscall(SYS_newfstatat, AT_FDCWD,
+                      resolve_android_path(pathname), buffer,
+                      AT_SYMLINK_NOFOLLOW);
+}
+
+static int bionic_fstat_fake(int fd, void *buffer) {
+  return (int)syscall(SYS_fstat, fd, buffer);
 }
 
 static int mkdir_fake(const char *pathname, mode_t mode) {
@@ -702,7 +722,7 @@ DynLibFunction dynlib_functions[] = {
     {"freelocale", (uintptr_t)&freelocale_stub},
     {"fseek", (uintptr_t)&fseek},
     {"fseeko", (uintptr_t)&fseeko},
-    {"fstat", (uintptr_t)&fstat},
+    {"fstat", (uintptr_t)&bionic_fstat_fake},
     {"ftell", (uintptr_t)&ftell},
     {"ftello", (uintptr_t)&ftello},
     {"ftruncate", (uintptr_t)&ftruncate},
@@ -952,7 +972,8 @@ DynLibFunction dynlib_functions[] = {
     {"sscanf", (uintptr_t)&sscanf},
     {"__stack_chk_fail", (uintptr_t)&__stack_chk_fail_stub},
     {"__stack_chk_guard", (uintptr_t)&__stack_chk_guard_fake},
-    {"stat", (uintptr_t)&stat},
+    {"stat", (uintptr_t)&bionic_stat_fake},
+    {"lstat", (uintptr_t)&bionic_lstat_fake},
     {"strcasecmp", (uintptr_t)&strcasecmp},
     {"strcat", (uintptr_t)&strcat},
     {"__strcat_chk", (uintptr_t)&__strcat_chk},

@@ -5,6 +5,7 @@ set -euo pipefail
 
 export LC_ALL=C
 export TZ=UTC
+umask 022
 
 fail() {
   printf 'package error: %s\n' "$*" >&2
@@ -51,6 +52,8 @@ put() {
 put 0755 "$PORT_DIR/Chrono Trigger.sh"        "Chrono Trigger.sh"
 put 0755 "$BINARY"                            "chrono/chrono-universal"
 put 0755 "$PORT_DIR/run.sh"                   "chrono/run.sh"
+put 0644 "$PORT_DIR/nxbootstrap.sh"           "chrono/nxbootstrap.sh"
+put 0644 "$PORT_DIR/nxport.json"              "chrono/nxport.json"
 put 0644 "$PORT_DIR/README.md"                "chrono/README.md"
 put 0644 "$PORT_DIR/NOTICE.md"                "chrono/NOTICE.md"
 put 0644 "$PORT_DIR/INSTALLATION.md"          "chrono/INSTALLATION.md"
@@ -65,10 +68,12 @@ put 0644 "$PORT_DIR/fonts/OFL.txt"              "chrono/fonts/OFL.txt"
 put 0644 "$STATIC_DIR/gamedata/README.txt"      "chrono/gamedata/README.txt"
 put 0644 "$STATIC_DIR/assets/README.txt"        "chrono/assets/README.txt"
 put 0644 "$PORT_DIR/version.txt"                "chrono/version.txt"
-put 0755 "$PORT_DIR/nxextract.py"               "chrono/nxextract.py"
-put 0755 "$PORT_DIR/nxextract-ui"               "chrono/nxextract-ui"
-put 0755 "$PORT_DIR/nxextract-runtime-env.sh"   "chrono/nxextract-runtime-env.sh"
-put 0755 "$PORT_DIR/run-extractor.sh"           "chrono/run-extractor.sh"
+put 0755 "$PORT_DIR/nxextract/nxextract.py"     "chrono/nxextract/nxextract.py"
+put 0755 "$PORT_DIR/nxextract/nxextract-ui"     "chrono/nxextract/nxextract-ui"
+put 0755 "$PORT_DIR/nxextract/nxextract-runtime-env.sh" \
+  "chrono/nxextract/nxextract-runtime-env.sh"
+put 0755 "$PORT_DIR/nxextract/run-extractor.sh" \
+  "chrono/nxextract/run-extractor.sh"
 put 0644 "$PORT_DIR/extractor.json"             "chrono/extractor.json"
 put 0644 "$PORT_DIR/nxextract-version.txt"      "chrono/nxextract-version.txt"
 
@@ -122,7 +127,7 @@ while IFS= read -r -d '' candidate; do
     *ELF*)
       relative=${candidate#"$STAGE/"}
       case "$relative" in
-        chrono/chrono-universal|chrono/nxextract-ui) ;;
+        chrono/chrono-universal|chrono/nxextract/nxextract-ui) ;;
         *) fail "ELF inesperado entrou no pacote: $relative" ;;
       esac
       glibc_at_most "$candidate" 30
@@ -143,13 +148,18 @@ PAD_LAYOUT=$(readelf -sW "$STAGE/chrono/chrono-universal" |
 # Bits +x esperados: nenhuma etapa critica depende deles, mas o zip precisa
 # entregar o conjunto certo (a lista nao pode encolher junto com refactor).
 for expected in "Chrono Trigger.sh" chrono/run.sh chrono/chrono-universal \
-                chrono/nxextract.py chrono/nxextract-ui \
-                chrono/nxextract-runtime-env.sh chrono/run-extractor.sh; do
+                chrono/nxextract/nxextract.py \
+                chrono/nxextract/nxextract-ui \
+                chrono/nxextract/nxextract-runtime-env.sh \
+                chrono/nxextract/run-extractor.sh; do
   [[ -x "$STAGE/$expected" ]] || fail "faltou bit +x esperado: $expected"
 done
 
 bash -n "$STAGE/Chrono Trigger.sh"
 bash -n "$STAGE/chrono/run.sh"
+bash -n "$STAGE/chrono/nxbootstrap.sh"
+bash -n "$STAGE/chrono/nxextract/nxextract-runtime-env.sh"
+bash -n "$STAGE/chrono/nxextract/run-extractor.sh"
 if grep -En '^[[:space:]]*(export[[:space:]]+)?SDL_(VIDEO|AUDIO)DRIVER=' \
     "$STAGE/Chrono Trigger.sh" "$STAGE/chrono/run.sh"; then
   fail "o launcher nao pode fixar backend SDL de video ou audio"

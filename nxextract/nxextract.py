@@ -21,17 +21,20 @@ import re
 import shutil
 import signal
 import stat
+import string
 import struct
 import subprocess
 import sys
 import time
+import unicodedata
 import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
 
-NXEXTRACT_VERSION = "1.2.3"
+NXEXTRACT_VERSION = "1.2.6"
 FORMAT_VERSION = 1
+TRANSACTION_FORMAT_VERSION = 2
 CHUNK_SIZE = 1024 * 1024
 DEFAULT_SAFETY_BYTES = 128 * 1024 * 1024
 DEFAULT_EXTENSIONS = (
@@ -121,6 +124,46 @@ def is_regular_file(path):
         return False
 
 
+def is_private_regular_file(path):
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+
+
+def _verified_regular_descriptor(path, flags, mode=0o600, single_link=True):
+    descriptor = os.open(
+        path,
+        flags
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        mode,
+    )
+    try:
+        descriptor_info = os.fstat(descriptor)
+        path_info = os.lstat(path)
+        if (
+            not stat.S_ISREG(descriptor_info.st_mode)
+            or (single_link and descriptor_info.st_nlink != 1)
+            or descriptor_info.st_dev != path_info.st_dev
+            or descriptor_info.st_ino != path_info.st_ino
+        ):
+            raise NXError("unsafe linked or replaced regular file: %s" % path)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def open_private_text_append(path):
+    descriptor = _verified_regular_descriptor(
+        path,
+        os.O_WRONLY | os.O_APPEND | os.O_CREAT,
+    )
+    return os.fdopen(descriptor, "a", encoding="utf-8", buffering=1)
+
+
 def validate_relative_path(value, label="path", allow_dot=False):
     if not isinstance(value, str):
         raise RecipeError("%s must be a string" % label)
@@ -133,7 +176,13 @@ def validate_relative_path(value, label="path", allow_dot=False):
     parts = value.split("/")
     if any(part in ("", ".", "..") for part in parts):
         raise RecipeError("unsafe %s: %r" % (label, value))
+    if any(part.endswith((" ", ".")) for part in parts):
+        raise RecipeError("non-portable %s component: %r" % (label, value))
     return "/".join(parts)
+
+
+def portable_path_key(value):
+    return unicodedata.normalize("NFC", value).casefold()
 
 
 def safe_zip_name(name, directory=False):
@@ -147,7 +196,12 @@ def safe_zip_name(name, directory=False):
     if not clean:
         return ""
     parts = clean.split("/")
-    if any(part in ("", ".", "..") or ":" in part for part in parts):
+    if any(
+        part in ("", ".", "..")
+        or ":" in part
+        or part.endswith((" ", "."))
+        for part in parts
+    ):
         raise SourceError("unsafe ZIP entry path: %r" % name)
     return "/".join(parts)
 
@@ -165,6 +219,56 @@ def safe_join(root, relative, label="destination"):
     return destination
 
 
+def resolve_real_directory(path, label):
+    original = os.path.abspath(os.fspath(path))
+    try:
+        mode = os.lstat(original).st_mode
+    except OSError as error:
+        raise NXError("%s is unavailable: %s" % (label, error))
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        raise NXError("%s is linked or not a directory" % label)
+    return os.path.realpath(original)
+
+
+def recipe_for_game(path, game_dir):
+    original = os.path.abspath(os.fspath(path))
+    try:
+        contained = os.path.commonpath((game_dir, original)) == game_dir
+    except ValueError:
+        contained = False
+    if not contained:
+        raise RecipeError("recipe must be a regular file inside the game directory")
+    relative = os.path.relpath(original, game_dir).replace(os.sep, "/")
+    validate_relative_path(relative, "recipe path")
+    ensure_no_symlink_parents(game_dir, relative)
+    if not is_private_regular_file(original):
+        raise RecipeError(
+            "recipe must be a private regular file inside the game directory"
+        )
+    recipe = Recipe(original)
+    protected = {
+        portable_path_key(recipe.marker): "installation marker",
+        portable_path_key(recipe.data.get("log", "nxextract.log")): "log",
+    }
+    if portable_path_key(relative) in protected:
+        raise RecipeError(
+            "recipe path collides with its %s" % protected[portable_path_key(relative)]
+        )
+    return recipe
+
+
+def private_workspace_file(workspace, value, label):
+    candidate = os.path.abspath(os.fspath(value))
+    relative = os.path.relpath(candidate, workspace).replace(os.sep, "/")
+    validate_relative_path(relative, label)
+    path = safe_join(workspace, relative, label)
+    ensure_no_symlink_parents(workspace, relative)
+    ensure_real_parent_directories(workspace, relative)
+    if os.path.lexists(path) and not is_private_regular_file(path):
+        raise NXError("%s must be a private regular file" % label)
+    return path
+
+
 def ensure_no_symlink_parents(root, relative):
     root = os.path.realpath(root)
     current = root
@@ -175,6 +279,24 @@ def ensure_no_symlink_parents(root, relative):
             mode = os.lstat(current).st_mode
         except FileNotFoundError:
             continue
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise NXError("unsafe non-directory parent: %s" % current)
+
+
+def ensure_real_parent_directories(root, relative):
+    """Create relative parents one component at a time without following links."""
+    root = os.path.realpath(root)
+    current = root
+    for part in validate_relative_path(relative).split("/")[:-1]:
+        current = os.path.join(current, part)
+        try:
+            os.mkdir(current)
+        except FileExistsError:
+            pass
+        try:
+            mode = os.lstat(current).st_mode
+        except OSError as error:
+            raise NXError("parent directory is unavailable: %s (%s)" % (current, error))
         if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
             raise NXError("unsafe non-directory parent: %s" % current)
 
@@ -208,49 +330,120 @@ def discard_path(path, logger=None, label=None):
     if not os.path.lexists(path):
         return True
     if logger is not None:
-        logger.log(
-            "warning: kept %s for the next run (%s)" % (label or path, failure)
+        _best_effort_log(
+            logger,
+            "warning: kept %s for the next run (%s)" % (label or path, failure),
         )
     return False
 
 
-def fsync_directory(path):
+def _best_effort_log(logger, message):
+    """Report post-publication cleanup without making it a new failure."""
+    if logger is None:
+        return
+    try:
+        logger.log(message)
+    except OSError:
+        pass
+
+
+def fsync_directory(path, required=False):
     try:
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     except OSError:
-        return
+        if required:
+            raise
+        return False
     try:
         os.fsync(descriptor)
     except OSError:
-        pass
+        if required:
+            raise
+        return False
     finally:
         os.close(descriptor)
+    return True
 
 
-def atomic_write(path, data, mode="w"):
+def durable_rename(source, destination):
+    """Rename one transaction path and persist both directory entries."""
+    source_parent = os.path.dirname(source) or "."
+    destination_parent = os.path.dirname(destination) or "."
+    os.rename(source, destination)
+    fsync_directory(source_parent, required=True)
+    if os.path.realpath(destination_parent) != os.path.realpath(source_parent):
+        fsync_directory(destination_parent, required=True)
+
+
+def _transaction_transition(_name, _journal):
+    """Test seam used to audit every durable transaction boundary."""
+    return None
+
+
+def atomic_write(path, data, mode="w", required_directory_sync=False):
+    path = os.fspath(path)
     parent = os.path.dirname(path) or "."
     os.makedirs(parent, exist_ok=True)
-    temporary = "%s.tmp.%d.%s" % (path, os.getpid(), uuid.uuid4().hex[:8])
+    basename = os.path.basename(path)
+    if basename in ("", ".", ".."):
+        raise NXError("atomic write has an unsafe target name: %s" % path)
+    parent_descriptor = os.open(
+        parent,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    temporary = ".%s.tmp.%d.%s" % (
+        basename,
+        os.getpid(),
+        uuid.uuid4().hex,
+    )
     binary = "b" in mode
+    descriptor = None
     try:
         kwargs = {} if binary else {"encoding": "utf-8", "newline": "\n"}
-        with open(temporary, mode, **kwargs) as stream:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+        with os.fdopen(descriptor, mode, **kwargs) as stream:
+            descriptor = None
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        fsync_directory(parent)
-    finally:
+        os.replace(
+            temporary,
+            basename,
+            src_dir_fd=parent_descriptor,
+            dst_dir_fd=parent_descriptor,
+        )
         try:
-            os.unlink(temporary)
+            os.fsync(parent_descriptor)
+        except OSError:
+            if required_directory_sync:
+                raise
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        try:
+            os.unlink(temporary, dir_fd=parent_descriptor)
         except FileNotFoundError:
             pass
+        os.close(parent_descriptor)
 
 
-def atomic_write_json(path, value):
+def atomic_write_json(path, value, required_directory_sync=False):
     atomic_write(
         path,
         json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+        required_directory_sync=required_directory_sync,
     )
 
 
@@ -342,9 +535,43 @@ def parse_magic(spec):
     return None
 
 
+def validate_template_fields(value, allowed, label):
+    if not isinstance(value, str):
+        raise RecipeError("%s must be text" % label)
+    try:
+        fields = string.Formatter().parse(value)
+        for _literal, field_name, format_spec, conversion in fields:
+            if field_name is None:
+                continue
+            if (
+                field_name not in allowed
+                or format_spec
+                or conversion is not None
+            ):
+                raise RecipeError(
+                    "%s contains unsupported template field: %r"
+                    % (label, field_name)
+                )
+    except ValueError as error:
+        raise RecipeError("%s contains an invalid template: %s" % (label, error))
+
+
+def paths_overlap(left, right):
+    left_key = portable_path_key(left.rstrip("/"))
+    right_key = portable_path_key(right.rstrip("/"))
+    return (
+        left_key == right_key
+        or left_key.startswith(right_key + "/")
+        or right_key.startswith(left_key + "/")
+    )
+
+
 class Recipe:
     def __init__(self, path):
-        self.path = os.path.realpath(path)
+        original = os.path.abspath(os.fspath(path))
+        if not is_regular_file(original):
+            raise RecipeError("recipe is missing, linked or not a regular file: %s" % path)
+        self.path = os.path.realpath(original)
         self.root = os.path.dirname(self.path)
         self.data = load_json(self.path)
         self._validate()
@@ -373,6 +600,7 @@ class Recipe:
         input_config = data.get("input", {})
         if not isinstance(input_config, dict):
             raise RecipeError("input must be an object")
+        self._validate_input_config(input_config)
         space = data.get("space", {})
         if not isinstance(space, dict):
             raise RecipeError("space must be an object")
@@ -407,15 +635,21 @@ class Recipe:
         for index, item in enumerate(commit):
             if not isinstance(item, str):
                 raise RecipeError("commit[%d] must be a string" % index)
+            validate_template_fields(item, {"abi"}, "commit[%d]" % index)
+            validate_relative_path(
+                item.replace("{abi}", "ABI"), "commit[%d]" % index
+            )
             normalized.append(item)
         for left_index, left in enumerate(normalized):
             for right in normalized[left_index + 1 :]:
                 left_plain = left.replace("{abi}", "ABI")
                 right_plain = right.replace("{abi}", "ABI")
-                if left_plain == right_plain:
+                left_key = portable_path_key(left_plain)
+                right_key = portable_path_key(right_plain)
+                if left_key == right_key:
                     raise RecipeError("duplicate commit path: %s" % left)
-                if left_plain.startswith(right_plain + "/") or right_plain.startswith(
-                    left_plain + "/"
+                if left_key.startswith(right_key + "/") or right_key.startswith(
+                    left_key + "/"
                 ):
                     raise RecipeError(
                         "overlapping commit paths are not allowed: %s / %s"
@@ -423,6 +657,22 @@ class Recipe:
                     )
         marker = data.get("marker", ".nxextract-%s.json" % identifier)
         validate_relative_path(marker, "marker")
+        if paths_overlap(marker, log):
+            raise RecipeError("marker and log paths must not overlap")
+        for item in normalized:
+            plain = item.replace("{abi}", "ABI")
+            for protected, label in (
+                (".nxextract", "private workspace"),
+                (marker, "installation marker"),
+                (log, "log"),
+            ):
+                if paths_overlap(plain, protected):
+                    raise RecipeError(
+                        "commit path %s overlaps the %s" % (item, label)
+                    )
+        for protected, label in ((marker, "marker"), (log, "log")):
+            if paths_overlap(protected, ".nxextract"):
+                raise RecipeError("%s path overlaps the private workspace" % label)
         hooks = data.get("hooks", [])
         if not isinstance(hooks, list):
             raise RecipeError("hooks must be a list")
@@ -443,6 +693,34 @@ class Recipe:
                 isinstance(item, str) and item for item in argv
             ):
                 raise RecipeError("hook %s argv must be a non-empty string list" % hook_id)
+            for value in argv:
+                validate_template_fields(
+                    value,
+                    {"game_dir", "stage", "workspace", "recipe_dir", "abi"},
+                    "hook %s argv" % hook_id,
+                )
+            cwd = hook.get("cwd", "{game_dir}")
+            if not isinstance(cwd, str) or not cwd:
+                raise RecipeError("hook %s cwd must be text" % hook_id)
+            validate_template_fields(
+                cwd,
+                {"game_dir", "stage", "workspace", "recipe_dir", "abi"},
+                "hook %s cwd" % hook_id,
+            )
+            environment = hook.get("env", {})
+            if not isinstance(environment, dict) or not all(
+                isinstance(key, str)
+                and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key)
+                and isinstance(value, str)
+                for key, value in environment.items()
+            ):
+                raise RecipeError("hook %s env must contain safe string assignments" % hook_id)
+            for value in environment.values():
+                validate_template_fields(
+                    value,
+                    {"game_dir", "stage", "workspace", "recipe_dir", "abi"},
+                    "hook %s environment" % hook_id,
+                )
             checks = hook.get("checkpoint", [])
             if not isinstance(checks, list):
                 raise RecipeError("hook %s checkpoint must be a list" % hook_id)
@@ -453,6 +731,95 @@ class Recipe:
             raise RecipeError("validate must be a list")
         for check in checks:
             self._validate_output_check(check, "validate")
+
+        abi_order = data.get("abi_order")
+        if abi_order is not None:
+            if not isinstance(abi_order, list) or not abi_order:
+                raise RecipeError("abi_order must be a non-empty string list")
+            seen_abis = set()
+            for abi in abi_order:
+                if not isinstance(abi, str) or not re.fullmatch(
+                    r"[A-Za-z0-9._-]{1,64}", abi
+                ):
+                    raise RecipeError("abi_order contains an invalid ABI")
+                key = abi.casefold()
+                if key in seen_abis:
+                    raise RecipeError("abi_order contains a duplicate ABI")
+                seen_abis.add(key)
+
+    def _validate_input_config(self, config):
+        extensions = config.get("extensions", list(DEFAULT_EXTENSIONS))
+        if not isinstance(extensions, list) or not extensions:
+            raise RecipeError("input.extensions must be a non-empty list")
+        seen_extensions = set()
+        for extension in extensions:
+            if (
+                not isinstance(extension, str)
+                or re.fullmatch(r"\.[A-Za-z0-9][A-Za-z0-9._+-]{0,31}", extension)
+                is None
+            ):
+                raise RecipeError("input.extensions contains an invalid extension")
+            key = extension.casefold()
+            if key in seen_extensions:
+                raise RecipeError("input.extensions contains a duplicate")
+            seen_extensions.add(key)
+
+        search_dirs = config.get("search_dirs", ["gamedata", "."])
+        if not isinstance(search_dirs, list) or not search_dirs:
+            raise RecipeError("input.search_dirs must be a non-empty list")
+        seen_directories = set()
+        for directory in search_dirs:
+            if directory != ".":
+                validate_relative_path(directory, "input search directory")
+            if not isinstance(directory, str):
+                raise RecipeError("input search directory must be text")
+            key = portable_path_key(directory)
+            if key in seen_directories:
+                raise RecipeError("input.search_dirs contains a duplicate")
+            seen_directories.add(key)
+
+        for name in ("prefer_first_nonempty", "sniff_all_in_primary"):
+            if name in config and not isinstance(config[name], bool):
+                raise RecipeError("input.%s must be boolean" % name)
+
+        limits = {
+            "max_files": (1, 4096),
+            "max_bundle_apks": (1, 4096),
+            "max_member_bytes": (1, 1 << 50),
+            "max_bundle_bytes": (1, 1 << 50),
+        }
+        for name, bounds in limits.items():
+            if name not in config:
+                continue
+            value = config[name]
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < bounds[0]
+                or value > bounds[1]
+            ):
+                raise RecipeError("input.%s is out of range" % name)
+
+        if "packages" in config:
+            packages = config["packages"]
+            if not isinstance(packages, list) or not packages:
+                raise RecipeError("input.packages must be a non-empty list")
+            seen_packages = set()
+            for package in packages:
+                if (
+                    not isinstance(package, str)
+                    or len(package) > 255
+                    or re.fullmatch(
+                        r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+",
+                        package,
+                    )
+                    is None
+                ):
+                    raise RecipeError("input.packages contains an invalid package")
+                key = package.casefold()
+                if key in seen_packages:
+                    raise RecipeError("input.packages contains a duplicate")
+                seen_packages.add(key)
 
     def _validate_rule(self, rule, index, seen):
         if not isinstance(rule, dict):
@@ -469,17 +836,55 @@ class Recipe:
         if not isinstance(source, dict):
             raise RecipeError("extract %s source must be an object" % rule_id)
         kind = source.get("kind")
-        if kind not in ("entry", "entries", "file", "entry_or_file"):
+        if kind not in ("entry", "entries", "file", "entry_or_file", "container"):
             raise RecipeError("extract %s has unsupported source kind" % rule_id)
         patterns = source.get("patterns", ["*"])
         if not isinstance(patterns, list) or not patterns or not all(
             isinstance(item, str) and item for item in patterns
         ):
             raise RecipeError("extract %s patterns must be a non-empty string list" % rule_id)
+        for pattern in patterns:
+            validate_template_fields(
+                pattern, {"abi"}, "extract %s pattern" % rule_id
+            )
+        scopes = source.get("scopes", ["apk", "bundle"])
+        if not isinstance(scopes, list) or not scopes or not all(
+            item in ("apk", "bundle") for item in scopes
+        ):
+            raise RecipeError("extract %s scopes must contain apk and/or bundle" % rule_id)
+        if len(set(scopes)) != len(scopes):
+            raise RecipeError("extract %s scopes contains a duplicate" % rule_id)
+        file_extensions = source.get("file_extensions", [])
+        if not isinstance(file_extensions, list):
+            raise RecipeError("extract %s file_extensions must be a list" % rule_id)
+        for extension in file_extensions:
+            if (
+                not isinstance(extension, str)
+                or re.fullmatch(r"\.[A-Za-z0-9][A-Za-z0-9._+-]{0,31}", extension)
+                is None
+            ):
+                raise RecipeError("extract %s has an invalid file extension" % rule_id)
+        for boolean_name in ("case_sensitive", "flatten"):
+            if boolean_name in source and not isinstance(source[boolean_name], bool):
+                raise RecipeError(
+                    "extract %s %s must be boolean" % (rule_id, boolean_name)
+                )
+        if "required" in rule and not isinstance(rule["required"], bool):
+            raise RecipeError("extract %s required must be boolean" % rule_id)
         destination = rule.get("destination")
         if not isinstance(destination, str) or not destination:
             raise RecipeError("extract %s destination is required" % rule_id)
-        if kind in ("entry", "file", "entry_or_file"):
+        allowed_destination_fields = (
+            {"abi", "basename"}
+            if kind in ("entry", "file", "entry_or_file", "container")
+            else {"abi"}
+        )
+        validate_template_fields(
+            destination,
+            allowed_destination_fields,
+            "extract %s destination" % rule_id,
+        )
+        if kind in ("entry", "file", "entry_or_file", "container"):
             validate_relative_path(
                 destination.replace("{abi}", "ABI").replace("{basename}", "FILE"),
                 "extract %s destination" % rule_id,
@@ -492,10 +897,32 @@ class Recipe:
         strip_prefix = source.get("strip_prefix")
         if strip_prefix is not None and not isinstance(strip_prefix, str):
             raise RecipeError("extract %s strip_prefix must be text" % rule_id)
+        if strip_prefix is not None:
+            validate_template_fields(
+                strip_prefix, {"abi"}, "extract %s strip_prefix" % rule_id
+            )
+        if "split" in source:
+            split = source["split"]
+            if kind != "container":
+                raise RecipeError("extract %s split is only valid for container" % rule_id)
+            if not isinstance(split, str) or re.fullmatch(
+                r"[A-Za-z0-9._-]{1,255}", split
+            ) is None:
+                raise RecipeError("extract %s split is invalid" % rule_id)
         validation = rule.get("validate", {})
         if not isinstance(validation, dict):
             raise RecipeError("extract %s validate must be an object" % rule_id)
         self._validate_validation(validation, "extract %s" % rule_id)
+        if "mode" in rule:
+            mode = rule["mode"]
+            if not isinstance(mode, (str, int)) or isinstance(mode, bool):
+                raise RecipeError("extract %s mode must be octal" % rule_id)
+            try:
+                numeric_mode = int(str(mode), 8)
+            except ValueError:
+                raise RecipeError("extract %s mode must be octal" % rule_id)
+            if numeric_mode < 0 or numeric_mode > 0o777:
+                raise RecipeError("extract %s mode is out of range" % rule_id)
 
     def _validate_validation(self, spec, label):
         for key in (
@@ -508,15 +935,61 @@ class Recipe:
             "exact_bytes",
             "min_bytes",
             "max_bytes",
+            "exact_entries",
+            "min_entries",
+            "max_entries",
             "magic_offset",
         ):
             if key in spec and (
                 not isinstance(spec[key], int) or isinstance(spec[key], bool) or spec[key] < 0
             ):
                 raise RecipeError("%s %s must be a non-negative integer" % (label, key))
+        for canonical, alias in (
+            ("exact_files", "exact_entries"),
+            ("min_files", "min_entries"),
+            ("max_files", "max_entries"),
+        ):
+            if canonical in spec and alias in spec and spec[canonical] != spec[alias]:
+                raise RecipeError(
+                    "%s %s conflicts with %s" % (label, canonical, alias)
+                )
+        exact_count = spec.get("exact_files", spec.get("exact_entries"))
+        minimum_count = spec.get("min_files", spec.get("min_entries"))
+        maximum_count = spec.get("max_files", spec.get("max_entries"))
+        if exact_count is not None and (
+            (minimum_count is not None and exact_count < minimum_count)
+            or (maximum_count is not None and exact_count > maximum_count)
+        ):
+            raise RecipeError("%s exact file count conflicts with its bounds" % label)
+        if (
+            minimum_count is not None
+            and maximum_count is not None
+            and minimum_count > maximum_count
+        ):
+            raise RecipeError("%s minimum file count exceeds maximum" % label)
+        if "size" in spec and (
+            ("min_size" in spec and spec["size"] < spec["min_size"])
+            or ("max_size" in spec and spec["size"] > spec["max_size"])
+        ):
+            raise RecipeError("%s exact size conflicts with its bounds" % label)
+        if (
+            "min_size" in spec
+            and "max_size" in spec
+            and spec["min_size"] > spec["max_size"]
+        ):
+            raise RecipeError("%s minimum size exceeds maximum" % label)
         normalize_hash_list(spec.get("sha256"), "%s sha256" % label)
         normalize_crc_list(spec.get("crc32"), "%s crc32" % label)
         parse_magic(spec)
+        expected_type = spec.get("type")
+        if expected_type not in (None, "file", "tree", "directory"):
+            raise RecipeError("%s type is unsupported" % label)
+        fingerprint = spec.get("tree_fingerprint")
+        if fingerprint is not None and (
+            not isinstance(fingerprint, str)
+            or re.fullmatch(r"[0-9a-fA-F]{64}", fingerprint) is None
+        ):
+            raise RecipeError("%s tree_fingerprint must be SHA-256 hex" % label)
         if "elf_machine" in spec:
             machine = str(spec["elf_machine"]).lower()
             if machine != "{abi}" and machine not in ELF_MACHINES:
@@ -524,8 +997,13 @@ class Recipe:
         required = spec.get("required_paths", [])
         if not isinstance(required, list):
             raise RecipeError("%s required_paths must be a list" % label)
+        required_keys = set()
         for item in required:
             validate_relative_path(item, "%s required path" % label)
+            key = portable_path_key(item)
+            if key in required_keys:
+                raise RecipeError("%s required_paths contains a collision" % label)
+            required_keys.add(key)
 
     def _validate_output_check(self, check, label):
         if not isinstance(check, dict) or not isinstance(check.get("path"), str):
@@ -533,6 +1011,7 @@ class Recipe:
         validate_relative_path(
             check["path"].replace("{abi}", "ABI"), "%s path" % label
         )
+        validate_template_fields(check["path"], {"abi"}, "%s path" % label)
         self._validate_validation(check, label)
 
     @property
@@ -578,7 +1057,7 @@ class Recipe:
 
 class Progress:
     def __init__(self, path=None, logger=None):
-        self.path = os.path.realpath(path) if path else None
+        self.path = os.path.abspath(os.fspath(path)) if path else None
         self.logger = logger
         self.state = 1
         self.phase = 0
@@ -679,7 +1158,7 @@ class Logger:
         self.stream = None
         if path:
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            self.stream = open(path, "a", encoding="utf-8", buffering=1)
+            self.stream = open_private_text_append(path)
 
     def log(self, message):
         line = "[%s] %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), message)
@@ -830,12 +1309,16 @@ def parse_android_manifest(data):
 
 class Archive:
     def __init__(self, path, kind, parent=None, label=None):
-        self.path = os.path.realpath(path)
+        original = os.path.abspath(os.fspath(path))
+        if not is_regular_file(original):
+            raise SourceError("archive is missing, linked or not regular: %s" % path)
+        self.path = os.path.realpath(original)
         self.kind = kind
         self.parent = os.path.realpath(parent) if parent else self.path
         self.label = label or os.path.basename(self.parent)
         self.zip = None
         self.members = {}
+        self.portable_collisions = {}
         self.package = None
         self.split = ""
         self._open()
@@ -846,15 +1329,57 @@ class Archive:
         try:
             self.zip = zipfile.ZipFile(self.path, "r")
             exact = set()
+            portable_components = {}
+            component_types = {}
             for info in self.zip.infolist():
                 name = safe_zip_name(info.filename, info.is_dir())
-                if not name or info.is_dir():
+                if not name:
                     continue
                 if name in exact:
                     raise SourceError(
                         "duplicate ZIP entry in %s: %s" % (self.label, name)
                     )
                 exact.add(name)
+                parts = name.split("/")
+                for index in range(1, len(parts) + 1):
+                    prefix = "/".join(parts[:index])
+                    key = portable_path_key(prefix)
+                    previous = portable_components.get(key)
+                    if previous is not None and previous != prefix:
+                        # Real Android APKs routinely carry case-colliding
+                        # obfuscated resources (res/9N.9.png vs res/9n.9.png).
+                        # Refusing the whole archive here rejected legitimate
+                        # builds whose colliding members are never extracted,
+                        # so the collision is recorded and only enforced over
+                        # the members a recipe actually selects.
+                        self.portable_collisions.setdefault(key, (previous, prefix))
+                    portable_components[key] = prefix
+                    object_type = (
+                        "directory"
+                        if index < len(parts) or info.is_dir()
+                        else "file"
+                    )
+                    previous_type = component_types.get(key)
+                    if previous_type is not None and previous_type != object_type:
+                        raise SourceError(
+                            "ZIP file/directory collision in %s: %s"
+                            % (self.label, prefix)
+                        )
+                    component_types[key] = object_type
+                if info.is_dir():
+                    continue
+                if info.flag_bits & 1:
+                    raise SourceError(
+                        "encrypted ZIP member is unsupported: %s in %s"
+                        % (info.filename, self.label)
+                    )
+                mode = (info.external_attr >> 16) & 0xFFFF
+                file_type = stat.S_IFMT(mode)
+                if stat.S_ISLNK(mode) or file_type not in (0, stat.S_IFREG):
+                    raise SourceError(
+                        "linked or special ZIP member is unsupported: %s in %s"
+                        % (info.filename, self.label)
+                    )
                 self.members[name] = info
             manifest = self.members.get("AndroidManifest.xml")
             if manifest is not None:
@@ -885,6 +1410,12 @@ class Archive:
                 "symbolic-link ZIP member is unsupported: %s in %s"
                 % (info.filename, self.label)
             )
+        file_type = stat.S_IFMT(mode)
+        if file_type not in (0, stat.S_IFREG):
+            raise SourceError(
+                "special-file ZIP member is unsupported: %s in %s"
+                % (info.filename, self.label)
+            )
         return self.zip.open(info, "r")
 
     def close(self):
@@ -898,10 +1429,11 @@ class Archive:
 
 class LooseFile:
     def __init__(self, path):
-        self.path = os.path.realpath(path)
-        self.label = os.path.basename(path)
-        if not is_regular_file(self.path):
+        original = os.path.abspath(os.fspath(path))
+        if not is_regular_file(original):
             raise SourceError("input is missing, linked or not regular: %s" % path)
+        self.path = os.path.realpath(original)
+        self.label = os.path.basename(path)
 
 
 class CandidateGroup:
@@ -969,9 +1501,10 @@ def discover_inputs(recipe, game_dir, explicit_inputs, logger):
     paths = []
     if explicit_inputs:
         for value in explicit_inputs:
-            candidate = os.path.realpath(value)
-            if not is_regular_file(candidate):
+            original = os.path.abspath(value)
+            if not is_regular_file(original):
                 raise SourceError("explicit input is not a regular file: %s" % value)
+            candidate = os.path.realpath(original)
             paths.append(candidate)
     else:
         search_dirs = config.get("search_dirs", ["gamedata", "."])
@@ -984,11 +1517,14 @@ def discover_inputs(recipe, game_dir, explicit_inputs, logger):
                 directory = game_dir
             else:
                 validate_relative_path(relative, "input search directory")
+                ensure_no_symlink_parents(
+                    game_dir, relative.rstrip("/") + "/.nxextract-scan"
+                )
                 directory = safe_join(game_dir, relative, "input search directory")
             if not os.path.isdir(directory) or os.path.islink(directory):
                 continue
             found_here = []
-            for name in sorted(os.listdir(directory), key=lambda item: item.casefold()):
+            for name in sorted(os.listdir(directory), key=portable_path_key):
                 candidate = os.path.join(directory, name)
                 if not is_regular_file(candidate):
                     continue
@@ -1055,17 +1591,25 @@ def _bundle_cache_token(path):
     return sha256_bytes(identity.encode("utf-8"))[:20]
 
 
+def _zip_member_cache_valid(info, destination):
+    if not is_private_regular_file(destination):
+        return False
+    try:
+        return (
+            file_size(destination) == info.file_size
+            and file_crc32(destination) == info.CRC
+        )
+    except OSError:
+        return False
+
+
 def _copy_zip_member_resume(archive, info, destination, max_member_bytes):
     if info.file_size <= 0 or info.file_size > max_member_bytes:
         raise SourceError(
             "inner APK has unsafe size %d: %s" % (info.file_size, info.filename)
         )
-    if is_regular_file(destination):
-        try:
-            if file_size(destination) == info.file_size and file_crc32(destination) == info.CRC:
-                return
-        except OSError:
-            pass
+    if _zip_member_cache_valid(info, destination):
+        return
     os.makedirs(os.path.dirname(destination), exist_ok=True)
     temporary = destination + ".part"
     try:
@@ -1075,9 +1619,7 @@ def _copy_zip_member_resume(archive, info, destination, max_member_bytes):
             pass
         value = 0
         written = 0
-        if info.flag_bits & 1:
-            raise SourceError("encrypted inner APK is unsupported: %s" % info.filename)
-        with archive.open(info, "r") as source, open(temporary, "xb") as output:
+        with archive.open_member(info) as source, open(temporary, "xb") as output:
             while True:
                 block = source.read(CHUNK_SIZE)
                 if not block:
@@ -1118,7 +1660,7 @@ def build_candidate_groups(recipe, discovery, workspace, logger, progress):
         raise RecipeError("input bundle byte limits must be positive")
     safety = int(recipe.data.get("space", {}).get("safety_bytes", DEFAULT_SAFETY_BYTES))
     cache_root = os.path.join(workspace, "source-cache")
-    os.makedirs(cache_root, exist_ok=True)
+    _ensure_real_directory(cache_root, "source cache")
     loose = [LooseFile(path) for path in discovery.loose]
     generic = [
         Archive(path, "bundle", label=os.path.basename(path))
@@ -1156,21 +1698,21 @@ def build_candidate_groups(recipe, discovery, workspace, logger, progress):
                 "bundle APK payload exceeds safety limit: %s" % outer.label
             )
         bundle_cache = os.path.join(cache_root, "bundle-" + _bundle_cache_token(path))
-        os.makedirs(bundle_cache, exist_ok=True)
-        cached_bytes = 0
-        for name in os.listdir(bundle_cache):
-            candidate = os.path.join(bundle_cache, name)
-            if is_regular_file(candidate):
-                cached_bytes += file_size(candidate)
-        missing = max(0, expanded_bytes - cached_bytes)
-        _check_free_space(workspace, missing + safety, "APK bundle expansion")
-        inner_archives = []
+        _ensure_real_directory(bundle_cache, "bundle source cache")
+        cache_destinations = []
+        missing = 0
         for member_index, info in enumerate(members):
             token = sha256_bytes(info.filename.encode("utf-8"))[:12]
             destination = os.path.join(
                 bundle_cache, "%03d-%s.apk" % (member_index, token)
             )
-            _copy_zip_member_resume(outer.zip, info, destination, max_member_bytes)
+            cache_destinations.append((info, destination))
+            if not _zip_member_cache_valid(info, destination):
+                missing += info.file_size
+        _check_free_space(workspace, missing + safety, "APK bundle expansion")
+        inner_archives = []
+        for info, destination in cache_destinations:
+            _copy_zip_member_resume(outer, info, destination, max_member_bytes)
             inner = Archive(
                 destination,
                 "apk",
@@ -1242,6 +1784,39 @@ def build_candidate_groups(recipe, discovery, workspace, logger, progress):
         raise SourceError(
             "no APK, APKM, APKS, XAPK, companion archive or loose payload was found"
         )
+    wanted = config.get("packages")
+    if wanted:
+        if not isinstance(wanted, list) or not all(
+            isinstance(item, str) and item for item in wanted
+        ):
+            raise RecipeError("input.packages must be a non-empty string list")
+        allowed = set(wanted)
+        # Um pacote com package desconhecido (APK sem manifest legivel) segue
+        # candidato: quem decide e' a validacao de conteudo, nao a ausencia de
+        # metadado. O que se recusa aqui e' o pacote de OUTRO aplicativo.
+        kept = [
+            group for group in groups
+            if group.package is None or group.package in allowed
+        ]
+        refused = [group for group in groups if group not in kept]
+        for group in refused:
+            logger.log(
+                "ignoring %s: package %s is not accepted by this recipe (%s)"
+                % (group.label, group.package, ", ".join(sorted(allowed)))
+            )
+        if not kept:
+            for archive in opened:
+                archive.close()
+            raise SourceError(
+                "the files in gamedata/ belong to %s, and this port only accepts "
+                "%s"
+                % (
+                    ", ".join(sorted({g.package for g in refused if g.package}))
+                    or "an unknown application",
+                    ", ".join(sorted(allowed)),
+                )
+            )
+        groups = kept
     return groups, opened
 
 
@@ -1266,7 +1841,7 @@ class SourceItem:
     def identity(self):
         return (
             self.rule_id,
-            self.destination.casefold(),
+            portable_path_key(self.destination),
             self.size,
             self.crc,
             self.source_name,
@@ -1281,7 +1856,10 @@ class Plan:
         self.commit_paths = commit_paths
         fingerprint = [
             (item.rule_id, item.destination, item.size, item.crc)
-            for item in sorted(items, key=lambda value: value.destination.casefold())
+            for item in sorted(
+                items,
+                key=lambda value: portable_path_key(value.destination),
+            )
         ]
         self.fingerprint = sha256_bytes(canonical_json(fingerprint))
 
@@ -1429,11 +2007,14 @@ def _size_valid(size, spec):
 
 
 def validate_summary(count, total, spec):
-    if "exact_files" in spec and count != spec["exact_files"]:
+    exact_count = spec.get("exact_files", spec.get("exact_entries"))
+    minimum_count = spec.get("min_files", spec.get("min_entries"))
+    maximum_count = spec.get("max_files", spec.get("max_entries"))
+    if exact_count is not None and count != exact_count:
         return False
-    if "min_files" in spec and count < spec["min_files"]:
+    if minimum_count is not None and count < minimum_count:
         return False
-    if "max_files" in spec and count > spec["max_files"]:
+    if maximum_count is not None and count > maximum_count:
         return False
     if "exact_bytes" in spec and total != spec["exact_bytes"]:
         return False
@@ -1453,6 +2034,28 @@ def _source_scopes(source):
     return scopes
 
 
+def _assert_portable_selection(matches):
+    """Enforce case-insensitive path safety over the SELECTED members only.
+
+    An extracted tree must be writable on a case-insensitive card (exFAT/FAT),
+    so two selected members may not collapse to the same portable path.  What
+    the rest of the archive contains is irrelevant: it is never written.
+    """
+    seen = {}
+    for archive, _info, name in matches:
+        parts = name.split("/")
+        for index in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:index])
+            key = (id(archive), portable_path_key(prefix))
+            previous = seen.get(key)
+            if previous is not None and previous != prefix:
+                raise SourceError(
+                    "non-portable ZIP path collision in %s: %s / %s"
+                    % (archive.label, previous, prefix)
+                )
+            seen[key] = prefix
+
+
 def _candidate_members(group, source, abi):
     patterns = [template_value(value, abi) for value in source.get("patterns", ["*"])]
     scopes = _source_scopes(source)
@@ -1466,6 +2069,7 @@ def _candidate_members(group, source, abi):
             for name, info in archive.members.items():
                 if member_matches(name, pattern, case_sensitive):
                     matches.append((archive, info, name))
+        _assert_portable_selection(matches)
         by_pattern.append((pattern, matches))
     return by_pattern
 
@@ -1483,6 +2087,43 @@ def _candidate_loose(group, source, abi):
         if any(member_matches(name, pattern, case_sensitive) for pattern in patterns):
             matches.append(loose)
     return matches
+
+
+def _candidate_containers(group, source, abi):
+    """O APK selecionado, ele mesmo, como arquivo.
+
+    Existe porque ha' jogos cujo payload NAO e' um subconjunto de membros: o
+    proprio APK e' o dado que o port abre em tempo de execucao (Cocos2d-x lendo
+    os recursos por minizip, por exemplo). Sem isto, a unica saida seria
+    extrair a arvore inteira e reempacota-la, ocupando o dobro do cartao.
+
+    Por padrao seleciona o APK BASE (o que carrega os assets do app); um split
+    especifico pode ser pedido por `split`.
+    """
+    # O padrao aqui e' `apk` e nao `apk+bundle`: o container e' o pacote do app.
+    # O .xapk que o embrulha tambem e' um zip sem split, e entraria como segundo
+    # candidato -- a recusa apareceria como "ambiguo", que nao explica nada.
+    scopes = _source_scopes(dict(source, scopes=source.get("scopes", ["apk"])))
+    wanted = source.get("split")
+    patterns = [template_value(value, abi) for value in source.get("patterns", ["*"])]
+    case_sensitive = bool(source.get("case_sensitive", False))
+    found = []
+    for archive in group.archives:
+        if archive.kind not in scopes:
+            continue
+        split = archive.split or ""
+        if wanted is None:
+            if split:
+                continue
+        elif split != wanted:
+            continue
+        if not any(
+            member_matches(archive.label, pattern, case_sensitive)
+            for pattern in patterns
+        ):
+            continue
+        found.append(LooseFile(archive.path))
+    return found
 
 
 def _choose_one(rule, group, abi):
@@ -1507,6 +2148,15 @@ def _choose_one(rule, group, abi):
                 candidates.extend(valid)
                 break
     loose_candidates = []
+    if source["kind"] == "container":
+        container_all = _candidate_containers(group, source, abi)
+        loose_candidates = [
+            item for item in container_all if validate_loose_candidate(item, spec, abi)
+        ]
+        container_invalid = [item for item in container_all if item not in loose_candidates]
+        rejected += len(container_invalid)
+        if container_invalid and rejected_example is None:
+            rejected_example = container_invalid[0].label
     if source["kind"] in ("file", "entry_or_file"):
         loose_all = _candidate_loose(group, source, abi)
         loose_candidates = [
@@ -1592,7 +2242,7 @@ def _choose_many(rule, group, abi):
         safe_zip_name(relative)
         destination = "%s/%s" % (destination_root.rstrip("/"), relative)
         validate_relative_path(destination, "destination")
-        key = destination.casefold()
+        key = portable_path_key(destination)
         previous = destinations.get(key)
         if previous is not None:
             if (
@@ -1608,7 +2258,10 @@ def _choose_many(rule, group, abi):
         destinations[key] = SourceItem(
             rule["id"], destination, archive=archive, info=info
         )
-    items = sorted(destinations.values(), key=lambda item: item.destination.casefold())
+    items = sorted(
+        destinations.values(),
+        key=lambda item: portable_path_key(item.destination),
+    )
     if not validate_summary(
         len(items), sum(item.size for item in items), rule.get("validate", {})
     ):
@@ -1624,7 +2277,13 @@ def _expand_commit_paths(recipe, abi):
         paths.append(path)
     for index, left in enumerate(paths):
         for right in paths[index + 1 :]:
-            if left == right or left.startswith(right + "/") or right.startswith(left + "/"):
+            left_key = portable_path_key(left)
+            right_key = portable_path_key(right)
+            if (
+                left_key == right_key
+                or left_key.startswith(right_key + "/")
+                or right_key.startswith(left_key + "/")
+            ):
                 raise RecipeError("expanded commit paths overlap: %s / %s" % (left, right))
     return paths
 
@@ -1651,7 +2310,7 @@ def build_plan_for(recipe, group, abi):
                 raise RecipeError(
                     "destination %s is outside recipe commit roots" % item.destination
                 )
-            key = item.destination.casefold()
+            key = portable_path_key(item.destination)
             previous = destinations.get(key)
             if previous is not None:
                 if previous.identity() != item.identity():
@@ -1758,21 +2417,37 @@ def _tree_stats(path, full):
     total = 0
     fingerprint = hashlib.sha256() if full else None
     required_files = []
+    portable_objects = {}
+
+    def register(relative):
+        key = portable_path_key(relative)
+        previous = portable_objects.get(key)
+        if previous is not None and previous != relative:
+            raise ValidationError(
+                "tree contains a non-portable path collision: %s / %s"
+                % (previous, relative)
+            )
+        portable_objects[key] = relative
+
     for current, directories, files in os.walk(path, topdown=True, followlinks=False):
         safe_directories = []
         for name in sorted(directories):
             child = os.path.join(current, name)
             if os.path.islink(child):
                 raise ValidationError("tree contains symbolic link: %s" % child)
+            register(os.path.relpath(child, path).replace(os.sep, "/"))
             safe_directories.append(name)
         directories[:] = safe_directories
         for name in sorted(files):
             child = os.path.join(current, name)
-            if not is_regular_file(child):
-                raise ValidationError("tree contains non-regular file: %s" % child)
+            if not is_private_regular_file(child):
+                raise ValidationError(
+                    "tree contains linked or non-regular file: %s" % child
+                )
             if name.endswith((".nxpart", ".part")):
                 raise ValidationError("tree contains an incomplete file: %s" % child)
             relative = os.path.relpath(child, path).replace(os.sep, "/")
+            register(relative)
             size = file_size(child)
             count += 1
             total += size
@@ -1829,8 +2504,8 @@ def validate_output_path(path, spec, full=True, label=None, abi=None):
             if full and fingerprint != expected_fingerprint.lower():
                 raise ValidationError("%s tree fingerprint mismatch" % label)
         return
-    if not is_regular_file(path):
-        raise ValidationError("%s is missing or not a regular file" % label)
+    if not is_private_regular_file(path):
+        raise ValidationError("%s is missing, linked or not a regular file" % label)
     if expected_type in ("tree", "directory"):
         raise ValidationError("%s is a file, expected directory" % label)
     size = file_size(path)
@@ -1878,6 +2553,7 @@ def validate_recipe_outputs(root, recipe, abi, plan=None, marker=None, full=True
         validation = rule.get("validate", {})
         for relative in paths:
             validate_relative_path(relative, "validation path")
+            ensure_no_symlink_parents(root, relative)
             path = safe_join(root, relative, "validation path")
             if not os.path.exists(path) and not rule.get("required", True):
                 continue
@@ -1892,6 +2568,7 @@ def validate_recipe_outputs(root, recipe, abi, plan=None, marker=None, full=True
     for index, check in enumerate(recipe.data.get("validate", [])):
         relative = template_value(check["path"], abi)
         validate_relative_path(relative, "validation path")
+        ensure_no_symlink_parents(root, relative)
         validate_output_path(
             safe_join(root, relative, "validation path"),
             check,
@@ -1909,10 +2586,96 @@ def validate_recipe_outputs(root, recipe, abi, plan=None, marker=None, full=True
     )
     for relative in commit_paths:
         validate_relative_path(relative, "commit path")
+        ensure_no_symlink_parents(root, relative)
         path = safe_join(root, relative, "commit path")
         if not os.path.exists(path) and not os.path.islink(path):
             raise ValidationError("commit payload is missing: %s" % relative)
     return checked
+
+
+def payload_metadata_seal(root, commit_paths):
+    """Cheap per-launch seal created only after a full payload validation."""
+    digest = hashlib.sha256()
+    object_count = 0
+    portable_objects = {}
+
+    def add_object(kind, relative, info=None):
+        nonlocal object_count
+        key = portable_path_key(relative)
+        previous = portable_objects.get(key)
+        if previous is not None and previous != relative:
+            raise ValidationError(
+                "payload seal found a non-portable path collision: %s / %s"
+                % (previous, relative)
+            )
+        portable_objects[key] = relative
+        encoded = relative.replace(os.sep, "/").encode("utf-8")
+        digest.update(kind)
+        digest.update(struct.pack("<I", len(encoded)))
+        digest.update(encoded)
+        if info is not None:
+            mtime_ns = getattr(
+                info,
+                "st_mtime_ns",
+                int(info.st_mtime * 1_000_000_000),
+            )
+            digest.update(struct.pack("<QQ", info.st_size, mtime_ns))
+        object_count += 1
+
+    for commit in sorted(commit_paths, key=portable_path_key):
+        ensure_no_symlink_parents(root, commit)
+        path = safe_join(root, commit, "payload seal")
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError as error:
+            raise ValidationError("payload seal cannot stat %s: %s" % (commit, error))
+        if stat.S_ISLNK(mode):
+            raise ValidationError("payload seal refuses symbolic link: %s" % commit)
+        if stat.S_ISREG(mode):
+            if not is_private_regular_file(path):
+                raise ValidationError(
+                    "payload seal refuses hard-linked file: %s" % commit
+                )
+            add_object(b"F", commit, os.stat(path, follow_symlinks=False))
+            continue
+        if not stat.S_ISDIR(mode):
+            raise ValidationError("payload seal refuses special object: %s" % commit)
+        add_object(b"D", commit)
+        for current, directories, files in os.walk(
+            path, topdown=True, followlinks=False
+        ):
+            directories.sort(key=portable_path_key)
+            files.sort(key=portable_path_key)
+            for name in directories:
+                child = os.path.join(current, name)
+                if os.path.islink(child):
+                    raise ValidationError(
+                        "payload seal refuses symbolic link: %s" % child
+                    )
+                relative = os.path.relpath(child, root).replace(os.sep, "/")
+                add_object(b"D", relative)
+            for name in files:
+                child = os.path.join(current, name)
+                if not is_private_regular_file(child):
+                    raise ValidationError(
+                        "payload seal refuses linked or non-regular file: %s" % child
+                    )
+                relative = os.path.relpath(child, root).replace(os.sep, "/")
+                add_object(b"F", relative, os.stat(child, follow_symlinks=False))
+    return digest.hexdigest(), object_count
+
+
+def marker_payload_seal_valid(marker, game_dir):
+    try:
+        actual_seal, actual_count = payload_metadata_seal(
+            game_dir, marker["commit"]
+        )
+    except (OSError, NXError, KeyError, TypeError):
+        return False
+    return (
+        actual_seal == marker.get("payload_seal")
+        and actual_count == marker.get("payload_objects")
+    )
 
 
 def _resume_item_valid(path, item, validation, abi):
@@ -1996,6 +2759,7 @@ def preflight_payload_space(recipe, plan, stage, logger):
     rules = {rule["id"]: rule for rule in recipe.data["extract"]}
     for item in plan.items:
         destination = safe_join(stage, item.destination, "stage destination")
+        ensure_no_symlink_parents(stage, item.destination)
         if not _resume_item_valid(
             destination,
             item,
@@ -2049,6 +2813,7 @@ def extract_plan(recipe, plan, stage, progress, logger):
         logger.log("resuming %s of already validated staged data" % human_bytes(resumed))
     for item in plan.items:
         destination = safe_join(stage, item.destination, "stage destination")
+        ensure_no_symlink_parents(stage, item.destination)
         validation = rules[item.rule_id].get("validate", {})
         if _resume_item_valid(destination, item, validation, plan.abi):
             continue
@@ -2088,6 +2853,7 @@ def _checkpoint_valid(stage, checks, abi):
         for check in checks:
             relative = template_value(check["path"], abi)
             validate_relative_path(relative, "hook checkpoint")
+            ensure_no_symlink_parents(stage, relative)
             validate_output_path(
                 safe_join(stage, relative, "hook checkpoint"),
                 check,
@@ -2112,7 +2878,7 @@ def run_hooks(recipe, plan, game_dir, stage, workspace, progress, logger):
         "abi": plan.abi,
     }
     hook_root = os.path.join(workspace, "hooks")
-    os.makedirs(hook_root, exist_ok=True)
+    _ensure_real_directory(hook_root, "hook checkpoint directory")
     for index, hook in enumerate(hooks):
         checkpoint = hook.get("checkpoint", [])
         marker = os.path.join(hook_root, hook["id"] + ".json")
@@ -2234,7 +3000,11 @@ class WorkspaceLock:
         os.makedirs(self.workspace, exist_ok=True)
         if os.path.islink(self.workspace):
             raise NXError("workspace must not be a symbolic link")
-        self.stream = open(self.path, "a+", encoding="utf-8")
+        descriptor = _verified_regular_descriptor(
+            self.path,
+            os.O_RDWR | os.O_CREAT,
+        )
+        self.stream = os.fdopen(descriptor, "r+", encoding="utf-8")
         try:
             fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as error:
@@ -2258,7 +3028,7 @@ class WorkspaceLock:
 
 
 def _load_marker(path):
-    if not is_regular_file(path):
+    if not is_private_regular_file(path):
         return None
     try:
         value = load_json(path)
@@ -2301,74 +3071,275 @@ def prepare_workspace(game_dir, identifier):
 
 
 def _journal_write(workspace, journal):
-    atomic_write_json(_journal_path(workspace), journal)
+    atomic_write_json(
+        _journal_path(workspace),
+        journal,
+        required_directory_sync=True,
+    )
+
+
+def _transaction_id_valid(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{32}", value) is not None
+
+
+def _validate_transaction_journal(recipe, journal):
+    if not isinstance(journal, dict) or journal.get("format") != FORMAT_VERSION:
+        raise NXError("unsafe or unsupported transaction journal")
+    if not _transaction_id_valid(journal.get("transaction_id")):
+        raise NXError("transaction journal has an invalid transaction ID")
+    if journal.get("recipe_digest") != recipe.digest:
+        raise NXError("transaction journal belongs to another recipe")
+    abi = journal.get("abi")
+    if not isinstance(abi, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", abi):
+        raise NXError("transaction journal has an invalid ABI")
+    expected_paths = _expand_commit_paths(recipe, abi)
+    records = journal.get("paths")
+    if not isinstance(records, list) or len(records) != len(expected_paths):
+        raise NXError("transaction journal commit set does not match the recipe")
+    if not isinstance(journal.get("published"), bool):
+        raise NXError("transaction journal publication state is invalid")
+
+    transaction_format = journal.get("transaction_format")
+    normalized = dict(journal)
+    normalized_paths = []
+    if transaction_format == TRANSACTION_FORMAT_VERSION:
+        if journal.get("recipe_id") != recipe.identifier:
+            raise NXError("transaction journal has the wrong recipe ID")
+        allowed_phases = {
+            "pending",
+            "backup-intent",
+            "backup-skipped",
+            "backed-up",
+            "install-intent",
+            "installed",
+        }
+        for expected, record in zip(expected_paths, records):
+            if not isinstance(record, dict) or record.get("path") != expected:
+                raise NXError("transaction journal path order does not match the recipe")
+            if not isinstance(record.get("had_live"), bool):
+                raise NXError("transaction journal live-data state is invalid")
+            if record.get("phase") not in allowed_phases:
+                raise NXError("transaction journal path phase is invalid")
+            normalized_paths.append(dict(record, legacy=False))
+    elif transaction_format is None:
+        # Journals emitted by 1.2.0-1.2.5 before the power-loss audit used two
+        # booleans. Accept only their complete, recipe-bound form and normalize
+        # it in memory; arbitrary/partial legacy JSON still fails closed.
+        for expected, record in zip(expected_paths, records):
+            if not isinstance(record, dict) or record.get("path") != expected:
+                raise NXError("legacy transaction path does not match the recipe")
+            backed_up = record.get("backed_up")
+            installed = record.get("installed")
+            if not isinstance(backed_up, bool) or not isinstance(installed, bool):
+                raise NXError("legacy transaction state is incomplete")
+            phase = "installed" if installed else "backed-up" if backed_up else "pending"
+            normalized_paths.append(
+                {
+                    "path": expected,
+                    "had_live": backed_up,
+                    "phase": phase,
+                    "legacy": True,
+                }
+            )
+    else:
+        raise NXError("unsupported transaction journal format")
+    normalized["paths"] = normalized_paths
+    return normalized
+
+
+def _ensure_transaction_root(workspace, name, create=False):
+    path = os.path.join(workspace, name)
+    if create:
+        _ensure_real_directory(path, "transaction %s" % name)
+    elif os.path.lexists(path):
+        try:
+            mode = os.lstat(path).st_mode
+        except OSError as error:
+            raise NXError("transaction %s is unavailable: %s" % (name, error))
+        if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+            raise NXError("transaction %s must be a real directory" % name)
+    return path
+
+
+def _safe_transaction_object(path, label):
+    if not os.path.lexists(path):
+        return False
+    mode = os.lstat(path).st_mode
+    if stat.S_ISLNK(mode) or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode)):
+        raise NXError("%s is linked or not a regular payload object: %s" % (label, path))
+    return True
+
+
+def _backup_tree_is_empty(path):
+    if not os.path.lexists(path):
+        return True
+    for current, directories, files in os.walk(path, topdown=True, followlinks=False):
+        if files:
+            return False
+        for name in directories:
+            if os.path.islink(os.path.join(current, name)):
+                return False
+    return True
 
 
 def _finalize_published_transaction(workspace, logger):
-    remove_path(_backup_root(workspace))
-    remove_path(_stage_root(workspace))
-    discard_path(
-        os.path.join(workspace, "source-cache"), logger, label="source cache"
+    cleanup_complete = True
+    cleanup_paths = (
+        (_backup_root(workspace), "transaction backup"),
+        (_stage_root(workspace), "transaction stage"),
+        (os.path.join(workspace, "source-cache"), "source cache"),
     )
-    try:
-        os.unlink(_journal_path(workspace))
-    except FileNotFoundError:
-        pass
+    for path, label in cleanup_paths:
+        if not discard_path(path, logger, label=label):
+            cleanup_complete = False
+
+    journal_path = _journal_path(workspace)
+    if cleanup_complete:
+        if not discard_path(journal_path, logger, label="transaction journal"):
+            cleanup_complete = False
+    elif os.path.lexists(journal_path):
+        _best_effort_log(
+            logger,
+            "warning: kept transaction journal so published cleanup can retry",
+        )
+
     fsync_directory(workspace)
-    logger.log("finished cleanup of a previously published transaction")
+    if cleanup_complete:
+        _best_effort_log(
+            logger, "finished cleanup of a previously published transaction"
+        )
+    else:
+        _best_effort_log(
+            logger,
+            "published payload remains valid; cleanup will retry on the next run",
+        )
+    return cleanup_complete
 
 
 def rollback_transaction(game_dir, workspace, journal, logger):
-    stage = _stage_root(workspace)
-    backup = _backup_root(workspace)
-    os.makedirs(stage, exist_ok=True)
+    stage = _ensure_transaction_root(workspace, "stage", create=True)
+    backup = _ensure_transaction_root(workspace, "backup", create=False)
     logger.log("rolling back interrupted payload transaction")
     for item in reversed(journal.get("paths", [])):
-        relative = item.get("path")
+        relative = item["path"]
         validate_relative_path(relative, "transaction path")
         destination = safe_join(game_dir, relative, "transaction destination")
         staged = safe_join(stage, relative, "transaction stage")
         previous = safe_join(backup, relative, "transaction backup")
-        if item.get("installed"):
-            if os.path.lexists(destination):
-                if not os.path.lexists(staged):
-                    os.makedirs(os.path.dirname(staged), exist_ok=True)
-                    os.rename(destination, staged)
-                else:
-                    remove_path(destination)
-        if item.get("backed_up") and os.path.lexists(previous):
-            if os.path.lexists(destination):
-                remove_path(destination)
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            os.rename(previous, destination)
-    fsync_directory(game_dir)
-    remove_path(backup)
+        ensure_no_symlink_parents(game_dir, relative)
+        ensure_no_symlink_parents(stage, relative)
+        if os.path.lexists(backup):
+            ensure_no_symlink_parents(backup, relative)
+        destination_exists = _safe_transaction_object(
+            destination, "transaction destination"
+        )
+        staged_exists = _safe_transaction_object(staged, "transaction stage")
+        backup_exists = _safe_transaction_object(previous, "transaction backup")
+
+        had_live = item["had_live"]
+        if item.get("legacy"):
+            # A legacy crash between rename(destination, backup) and its boolean
+            # update is identified by the backup object itself. If neither
+            # boolean nor backup exists and destination exists, it is the old
+            # live object that was never moved.
+            had_live = backup_exists or (
+                item["phase"] == "pending" and destination_exists
+            )
+
+        if had_live:
+            if backup_exists:
+                if destination_exists:
+                    if staged_exists:
+                        raise NXError(
+                            "ambiguous rollback state: live, stage and backup all exist "
+                            "for %s" % relative
+                        )
+                    ensure_real_parent_directories(stage, relative)
+                    durable_rename(destination, staged)
+                    destination_exists = False
+                    staged_exists = True
+                ensure_real_parent_directories(game_dir, relative)
+                durable_rename(previous, destination)
+                backup_exists = False
+                destination_exists = True
+            elif not destination_exists:
+                raise NXError(
+                    "cannot restore previous live payload for %s; backup is missing"
+                    % relative
+                )
+        else:
+            if backup_exists:
+                raise NXError("unexpected backup exists for new path %s" % relative)
+            if destination_exists:
+                if staged_exists:
+                    raise NXError(
+                        "ambiguous rollback state: destination and stage both exist "
+                        "for %s" % relative
+                    )
+                ensure_real_parent_directories(stage, relative)
+                durable_rename(destination, staged)
+
+        _transaction_transition("rollback-path-%s" % relative, journal)
+
+    fsync_directory(game_dir, required=True)
+    if not _backup_tree_is_empty(backup):
+        raise NXError("transaction backup contains untracked data; preserving journal")
+    if os.path.lexists(backup):
+        remove_path(backup)
+        fsync_directory(workspace, required=True)
     try:
         os.unlink(_journal_path(workspace))
     except FileNotFoundError:
         pass
-    fsync_directory(workspace)
+    fsync_directory(workspace, required=True)
     logger.log("payload transaction rolled back; staged work was preserved")
 
 
-def recover_transaction(game_dir, workspace, marker_path, logger):
+def recover_transaction(recipe, game_dir, workspace, marker_path, logger):
     path = _journal_path(workspace)
-    if not is_regular_file(path):
+    if not os.path.lexists(path):
         return
-    journal = load_json(path)
-    if not isinstance(journal, dict) or journal.get("format") != FORMAT_VERSION:
-        raise NXError("unsafe or unsupported transaction journal was preserved at %s" % path)
+    if not is_private_regular_file(path):
+        raise NXError(
+            "transaction journal is linked or not a private regular file: %s" % path
+        )
+    journal = _validate_transaction_journal(recipe, load_json(path))
     marker = _load_marker(marker_path)
     transaction_id = journal.get("transaction_id")
-    if journal.get("published") or (
-        marker is not None and marker.get("transaction_id") == transaction_id
-    ):
-        _finalize_published_transaction(workspace, logger)
-        return
+    if marker is not None and marker.get("transaction_id") == transaction_id:
+        if marker_matches_recipe(marker, recipe):
+            try:
+                validate_recipe_outputs(
+                    game_dir,
+                    recipe,
+                    marker["abi"],
+                    marker=marker,
+                    full=True,
+                )
+                if not marker_payload_seal_valid(marker, game_dir):
+                    raise ValidationError(
+                        "published marker payload metadata seal mismatch"
+                    )
+            except (OSError, NXError) as error:
+                logger.log(
+                    "published marker payload failed recovery validation: %s" % error
+                )
+            else:
+                _finalize_published_transaction(workspace, logger)
+                return
+        else:
+            logger.log("transaction marker failed schema/recipe validation")
+    elif journal.get("published"):
+        logger.log(
+            "journal claimed publication without a matching valid marker; rolling back"
+        )
     rollback_transaction(game_dir, workspace, journal, logger)
 
 
-def _write_install_marker(marker_path, recipe, plan, transaction_id):
+def _write_install_marker(marker_path, recipe, plan, transaction_id, game_dir):
+    payload_seal, payload_objects = payload_metadata_seal(
+        game_dir, plan.commit_paths
+    )
     marker = {
         "format": FORMAT_VERSION,
         "nxextract_version": NXEXTRACT_VERSION,
@@ -2380,39 +3351,60 @@ def _write_install_marker(marker_path, recipe, plan, transaction_id):
         "transaction_id": transaction_id,
         "completed": int(time.time()),
         "commit": list(plan.commit_paths),
+        "payload_seal": payload_seal,
+        "payload_objects": payload_objects,
         "items": [
             {"rule": item.rule_id, "destination": item.destination, "size": item.size}
             for item in plan.items
         ],
     }
-    atomic_write_json(marker_path, marker)
+    atomic_write_json(
+        marker_path,
+        marker,
+        required_directory_sync=True,
+    )
     return marker
 
 
 def commit_stage(recipe, plan, game_dir, workspace, marker_path, progress, logger):
-    stage = _stage_root(workspace)
-    backup = _backup_root(workspace)
-    remove_path(backup)
-    os.makedirs(backup, exist_ok=True)
+    stage = _ensure_transaction_root(workspace, "stage", create=False)
+    if not os.path.lexists(stage):
+        raise ValidationError("transaction stage is missing")
+    backup = _ensure_transaction_root(workspace, "backup", create=True)
+    if not _backup_tree_is_empty(backup):
+        raise NXError("transaction backup is not empty; refusing to overwrite it")
+    if os.path.lexists(_journal_path(workspace)):
+        raise NXError("unrecovered transaction journal blocks a new commit")
+    fsync_directory(workspace, required=True)
     transaction_id = uuid.uuid4().hex
-    journal = {
-        "format": FORMAT_VERSION,
-        "transaction_id": transaction_id,
-        "recipe_digest": recipe.digest,
-        "abi": plan.abi,
-        "published": False,
-        "paths": [
-            {"path": relative, "backed_up": False, "installed": False}
-            for relative in plan.commit_paths
-        ],
-    }
+    path_records = []
     for relative in plan.commit_paths:
+        destination = safe_join(game_dir, relative, "commit destination")
         staged = safe_join(stage, relative, "commit stage")
-        if not os.path.lexists(staged):
+        if not _safe_transaction_object(staged, "staged commit path"):
             raise ValidationError("staged commit path is missing: %s" % relative)
         ensure_no_symlink_parents(stage, relative)
         ensure_no_symlink_parents(game_dir, relative)
+        had_live = _safe_transaction_object(destination, "existing commit path")
+        path_records.append(
+            {
+                "path": relative,
+                "had_live": had_live,
+                "phase": "pending",
+            }
+        )
+    journal = {
+        "format": FORMAT_VERSION,
+        "transaction_format": TRANSACTION_FORMAT_VERSION,
+        "transaction_id": transaction_id,
+        "recipe_id": recipe.identifier,
+        "recipe_digest": recipe.digest,
+        "abi": plan.abi,
+        "published": False,
+        "paths": path_records,
+    }
     _journal_write(workspace, journal)
+    _transaction_transition("journal-created", journal)
     progress.update(
         phase=7,
         overall=900,
@@ -2425,22 +3417,47 @@ def commit_stage(recipe, plan, game_dir, workspace, marker_path, progress, logge
             relative = item["path"]
             destination = safe_join(game_dir, relative, "commit destination")
             previous = safe_join(backup, relative, "commit backup")
-            if os.path.lexists(destination):
-                os.makedirs(os.path.dirname(previous), exist_ok=True)
-                os.rename(destination, previous)
-                item["backed_up"] = True
-                _journal_write(workspace, journal)
             staged = safe_join(stage, relative, "commit stage")
-            os.makedirs(os.path.dirname(destination), exist_ok=True)
-            os.rename(staged, destination)
-            item["installed"] = True
+            if item["had_live"]:
+                item["phase"] = "backup-intent"
+                _journal_write(workspace, journal)
+                _transaction_transition("backup-intent-%d" % index, journal)
+                if not _safe_transaction_object(destination, "existing commit path"):
+                    raise NXError("live payload disappeared before backup: %s" % relative)
+                if os.path.lexists(previous):
+                    raise NXError("backup destination already exists: %s" % relative)
+                ensure_real_parent_directories(backup, relative)
+                durable_rename(destination, previous)
+                _transaction_transition("backup-renamed-%d" % index, journal)
+                item["phase"] = "backed-up"
+                _journal_write(workspace, journal)
+                _transaction_transition("backup-recorded-%d" % index, journal)
+            else:
+                if os.path.lexists(destination):
+                    raise NXError("new commit destination appeared unexpectedly: %s" % relative)
+                item["phase"] = "backup-skipped"
+                _journal_write(workspace, journal)
+                _transaction_transition("backup-skipped-%d" % index, journal)
+
+            item["phase"] = "install-intent"
             _journal_write(workspace, journal)
+            _transaction_transition("install-intent-%d" % index, journal)
+            if not _safe_transaction_object(staged, "staged commit path"):
+                raise NXError("staged payload disappeared before install: %s" % relative)
+            if os.path.lexists(destination):
+                raise NXError("commit destination is occupied before install: %s" % relative)
+            ensure_real_parent_directories(game_dir, relative)
+            durable_rename(staged, destination)
+            _transaction_transition("install-renamed-%d" % index, journal)
+            item["phase"] = "installed"
+            _journal_write(workspace, journal)
+            _transaction_transition("install-recorded-%d" % index, journal)
             progress.update(
                 phase_progress=(index + 1) * 700 // len(journal["paths"]),
                 overall=900 + (index + 1) * 60 // len(journal["paths"]),
                 detail=relative,
             )
-        fsync_directory(game_dir)
+        fsync_directory(game_dir, required=True)
         progress.update(
             phase=6,
             overall=970,
@@ -2449,21 +3466,34 @@ def commit_stage(recipe, plan, game_dir, workspace, marker_path, progress, logge
             force=True,
         )
         validate_recipe_outputs(game_dir, recipe, plan.abi, plan=plan, full=True)
-        _write_install_marker(marker_path, recipe, plan, transaction_id)
-        journal["published"] = True
-        _journal_write(workspace, journal)
-        fsync_directory(game_dir)
-    except BaseException:
+        _transaction_transition("payload-validated", journal)
+        _write_install_marker(
+            marker_path,
+            recipe,
+            plan,
+            transaction_id,
+            game_dir,
+        )
+        _transaction_transition("marker-published", journal)
+    except Exception:
         rollback_transaction(game_dir, workspace, journal, logger)
         raise
-    remove_path(backup)
-    remove_path(stage)
+
+    # The marker is the publication boundary. From here on the validated
+    # payload is live, and no backup/stage/journal cleanup failure may turn the
+    # install into exit 1. A stale pre-publication journal is also safe because
+    # recovery recognizes the marker's transaction_id.
+    journal["published"] = True
     try:
-        os.unlink(_journal_path(workspace))
-    except FileNotFoundError:
-        pass
-    fsync_directory(workspace)
-    logger.log("validated payload committed transactionally")
+        _journal_write(workspace, journal)
+        _transaction_transition("journal-published", journal)
+    except OSError as error:
+        _best_effort_log(
+            logger,
+            "warning: could not mark transaction journal published (%s)" % error,
+        )
+    fsync_directory(game_dir, required=True)
+    _best_effort_log(logger, "validated payload committed transactionally")
 
 
 class UISession:
@@ -2482,7 +3512,10 @@ class UISession:
         if self.ui_option in (None, "none", "off", "0"):
             return None
         if self.ui_option != "auto":
-            candidate = os.path.realpath(self.ui_option)
+            original = os.path.abspath(self.ui_option)
+            if not is_regular_file(original):
+                return None
+            candidate = os.path.realpath(original)
             return candidate if os.access(candidate, os.X_OK) else None
         candidates = (
             os.path.join(self.script_dir, "nxextract-ui"),
@@ -2502,8 +3535,8 @@ class UISession:
             os.unlink(self.stop_path)
         except FileNotFoundError:
             pass
-        self.log_stream = open(
-            os.path.join(self.workspace, "ui.log"), "a", encoding="utf-8", buffering=1
+        self.log_stream = open_private_text_append(
+            os.path.join(self.workspace, "ui.log")
         )
         try:
             self.process = subprocess.Popen(
@@ -2547,13 +3580,63 @@ class UISession:
 
 
 def marker_matches_recipe(marker, recipe):
-    return (
-        isinstance(marker, dict)
-        and marker.get("format") == FORMAT_VERSION
-        and marker.get("recipe_id") == recipe.identifier
-        and marker.get("recipe_digest") == recipe.digest
-        and isinstance(marker.get("abi"), str)
-    )
+    if not isinstance(marker, dict):
+        return False
+    abi = marker.get("abi")
+    if not isinstance(abi, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", abi):
+        return False
+    try:
+        expected_commit = _expand_commit_paths(recipe, abi)
+    except RecipeError:
+        return False
+    if (
+        marker.get("format") != FORMAT_VERSION
+        or marker.get("nxextract_version") != NXEXTRACT_VERSION
+        or marker.get("recipe_id") != recipe.identifier
+        or marker.get("recipe_version") != recipe.version
+        or marker.get("recipe_digest") != recipe.digest
+        or not _transaction_id_valid(marker.get("transaction_id"))
+        or not isinstance(marker.get("completed"), int)
+        or isinstance(marker.get("completed"), bool)
+        or marker.get("completed") < 0
+        or not isinstance(marker.get("plan_fingerprint"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", marker["plan_fingerprint"]) is None
+        or not isinstance(marker.get("payload_seal"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", marker["payload_seal"]) is None
+        or not isinstance(marker.get("payload_objects"), int)
+        or isinstance(marker.get("payload_objects"), bool)
+        or marker.get("payload_objects") < 1
+        or marker.get("commit") != expected_commit
+    ):
+        return False
+    items = marker.get("items")
+    if not isinstance(items, list):
+        return False
+    rule_ids = {rule["id"] for rule in recipe.data["extract"]}
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict) or item.get("rule") not in rule_ids:
+            return False
+        destination = item.get("destination")
+        size = item.get("size")
+        if (
+            not isinstance(destination, str)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+        ):
+            return False
+        try:
+            validate_relative_path(destination, "marker destination")
+        except RecipeError:
+            return False
+        if not _under_any_commit(destination, expected_commit):
+            return False
+        key = (item["rule"], portable_path_key(destination))
+        if key in seen:
+            return False
+        seen.add(key)
+    return True
 
 
 def marker_fast_valid(marker_path, recipe, game_dir, logger):
@@ -2570,6 +3653,9 @@ def marker_fast_valid(marker_path, recipe, game_dir, logger):
         )
     except (OSError, NXError) as error:
         logger.log("existing marker rejected: %s" % error)
+        return None
+    if not marker_payload_seal_valid(marker, game_dir):
+        logger.log("existing marker rejected: payload metadata seal mismatch")
         return None
     return marker
 
@@ -2597,7 +3683,13 @@ def try_adopt_existing(recipe, game_dir, marker_path, logger, progress, abi_over
                     pseudo_items.append(pseudo)
         pseudo_group = CandidateGroup("validated existing data", [], [], None, "existing")
         plan = Plan(pseudo_group, abi, pseudo_items, _expand_commit_paths(recipe, abi))
-        _write_install_marker(marker_path, recipe, plan, uuid.uuid4().hex)
+        _write_install_marker(
+            marker_path,
+            recipe,
+            plan,
+            uuid.uuid4().hex,
+            game_dir,
+        )
         logger.log("adopted fully validated existing data without requiring an APK")
         progress.done("EXISTING GAME DATA VALIDATED")
         return True
@@ -2618,16 +3710,14 @@ def _prepare_stage_state(recipe, plan, workspace, logger):
         logger.log("discarding staged data made for a different recipe or payload")
         remove_path(stage)
         remove_path(os.path.join(workspace, "hooks"))
-    os.makedirs(stage, exist_ok=True)
+    _ensure_real_directory(stage, "transaction stage")
     atomic_write_json(state_path, expected)
     return stage
 
 
 def install_command(args):
-    game_dir = os.path.realpath(args.game_dir)
-    if not os.path.isdir(game_dir) or os.path.islink(game_dir):
-        raise NXError("game directory is missing, linked or not a directory")
-    recipe = Recipe(args.recipe)
+    game_dir = resolve_real_directory(args.game_dir, "game directory")
+    recipe = recipe_for_game(args.recipe, game_dir)
     workspace = prepare_workspace(game_dir, recipe.identifier)
     log_path = safe_join(
         game_dir, recipe.data.get("log", "nxextract.log"), "log path"
@@ -2635,16 +3725,25 @@ def install_command(args):
     ensure_no_symlink_parents(
         game_dir, recipe.data.get("log", "nxextract.log")
     )
-    if os.path.islink(log_path):
-        raise NXError("log path must not be a symbolic link")
-    logger = Logger(log_path, verbose=not args.quiet)
-    progress_path = (
-        os.path.realpath(args.progress_file)
-        if args.progress_file
-        else os.path.join(workspace, "progress.txt")
+    ensure_real_parent_directories(
+        game_dir, recipe.data.get("log", "nxextract.log")
     )
-    progress = Progress(progress_path, logger)
+    if os.path.lexists(log_path) and not is_private_regular_file(log_path):
+        raise NXError("log path must be a private regular file")
+    progress_path = private_workspace_file(
+        workspace,
+        args.progress_file
+        if args.progress_file
+        else os.path.join(workspace, "progress.txt"),
+        "progress file",
+    )
     marker_path = safe_join(game_dir, recipe.marker, "marker")
+    ensure_no_symlink_parents(game_dir, recipe.marker)
+    ensure_real_parent_directories(game_dir, recipe.marker)
+    if os.path.lexists(marker_path) and not is_private_regular_file(marker_path):
+        raise NXError("installation marker must be a private regular file")
+    logger = Logger(log_path, verbose=not args.quiet)
+    progress = Progress(progress_path, logger)
     ui = UISession(
         args.ui,
         os.path.dirname(os.path.realpath(__file__)),
@@ -2665,7 +3764,7 @@ def install_command(args):
                     recipe.version,
                 )
             )
-            recover_transaction(game_dir, workspace, marker_path, logger)
+            recover_transaction(recipe, game_dir, workspace, marker_path, logger)
             if args.force_source:
                 logger.log(
                     "force-source requested; bypassing the installed marker "
@@ -2758,13 +3857,9 @@ def install_command(args):
             )
             for archive in archives:
                 archive.close()
-            discard_path(
-                os.path.join(workspace, "source-cache"),
-                logger,
-                label="source cache",
-            )
+            _finalize_published_transaction(workspace, logger)
             progress.done()
-            logger.log("=== installation complete ===")
+            _best_effort_log(logger, "=== installation complete ===")
             ui.stop(delay=float(recipe.data.get("ui_success_seconds", 1)))
             return 0
     except (NXError, OSError, zipfile.BadZipFile, RuntimeError, NotImplementedError) as error:
@@ -2781,10 +3876,8 @@ def install_command(args):
 
 
 def plan_command(args):
-    game_dir = os.path.realpath(args.game_dir)
-    if not os.path.isdir(game_dir) or os.path.islink(game_dir):
-        raise NXError("game directory is missing, linked or not a directory")
-    recipe = Recipe(args.recipe)
+    game_dir = resolve_real_directory(args.game_dir, "game directory")
+    recipe = recipe_for_game(args.recipe, game_dir)
     workspace = prepare_workspace(game_dir, recipe.identifier)
     logger = Logger(None, verbose=not args.quiet)
     progress = Progress(None, logger)
@@ -2838,9 +3931,9 @@ class ScanRecipe:
 
 
 def scan_command(args):
-    game_dir = os.path.realpath(args.game_dir)
+    game_dir = resolve_real_directory(args.game_dir, "game directory")
     logger = Logger(None, verbose=False)
-    recipe = Recipe(args.recipe) if args.recipe else ScanRecipe()
+    recipe = recipe_for_game(args.recipe, game_dir) if args.recipe else ScanRecipe()
     discovery = discover_inputs(recipe, game_dir, args.input, logger)
     records = []
     for kind, values in (
@@ -2891,8 +3984,8 @@ def scan_command(args):
 
 
 def verify_command(args):
-    game_dir = os.path.realpath(args.game_dir)
-    recipe = Recipe(args.recipe)
+    game_dir = resolve_real_directory(args.game_dir, "game directory")
+    recipe = recipe_for_game(args.recipe, game_dir)
     marker_path = safe_join(game_dir, recipe.marker, "marker")
     marker = _load_marker(marker_path)
     if not marker_matches_recipe(marker, recipe):
@@ -2900,6 +3993,8 @@ def verify_command(args):
     validate_recipe_outputs(
         game_dir, recipe, marker["abi"], marker=marker, full=True
     )
+    if not marker_payload_seal_valid(marker, game_dir):
+        raise ValidationError("installation payload metadata seal mismatch")
     print(
         "OK: %s version %s, ABI %s"
         % (recipe.title, recipe.version, marker["abi"])

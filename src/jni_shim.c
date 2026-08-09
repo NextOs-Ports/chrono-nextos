@@ -8,9 +8,9 @@
  * Os assets vem do disco via AAsset shim (imports.c), entao o AssetManager
  * pode ser um ponteiro dummy.
  */
+#include "ct_framework.h"
 #include "ct_platform.h"
 #include "jni_shim.h"
-#include "so_util.h"
 #include "util.h"
 #include <pthread.h>
 #include <stdarg.h>
@@ -184,7 +184,7 @@ static jboolean do_create_text_bitmap(void *textArr, void *fontStr, int fontSize
   free(txt);
   if (!rgba || W <= 0 || Hh <= 0) { if (rgba) free(rgba); return 0; }
   if (!g_nativeInitBitmapDC)
-    g_nativeInitBitmapDC = (void *)so_find_addr_safe(
+    g_nativeInitBitmapDC = (void *)ct_framework_find_active_export(
         "Java_org_cocos2dx_lib_Cocos2dxBitmap_nativeInitBitmapDC");
   if (!g_nativeInitBitmapDC) { free(rgba); return 0; }
   void *parr = jarr_new(W * Hh * 4, 1, rgba);

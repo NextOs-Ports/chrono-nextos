@@ -15,11 +15,11 @@
 #include <sys/mman.h>
 #include <SDL2/SDL.h>
 
+#include "ct_framework.h"
 #include "ct_platform.h"
 #include "error.h"
 #include "imports.h"
 #include "jni_shim.h"
-#include "so_util.h"
 #include "util.h"
 
 typedef int jint;
@@ -55,7 +55,6 @@ enum {
 };
 
 /* ---- Cocos2d-x JNI entry points ---- */
-static jint (*JNI_OnLoad)(void *vm, void *reserved);
 static void (*nativeSetContext)(void *env, void *thiz, void *ctx, void *assetmgr);
 static void (*nativeSetApkPath)(void *env, void *thiz, void *apkPath);
 static void (*setAssetManager)(void *env, void *clazz, void *assetmgr);
@@ -73,7 +72,6 @@ static void (*nativeTouchesBegin)(void *env, void *thiz, int id, float x, float 
 static void (*nativeTouchesEnd)(void *env, void *thiz, int id, float x, float y);
 static void (*nativeTouchesMove)(void *env, void *thiz, int id, float x, float y);
 
-static SDL_GameController *g_gamepad = NULL;
 static void *g_env = NULL;
 static void *g_vendor = NULL; /* jstring nome do controle (reusado em todos os eventos) */
 static int g_use_keyboard = 0; /* CHRONO_KEYBOARD=1 -> usar nativeKeyEvent */
@@ -84,21 +82,6 @@ static int g_use_keyboard = 0; /* CHRONO_KEYBOARD=1 -> usar nativeKeyEvent */
  * funcao -> __stack_chk_fail FALSO. Este pad _Thread_local desloca o layout de
  * TLS estatico p/ tpidr+0x28 cair num pad nunca-escrito -> canary estavel. */
 __attribute__((used, aligned(16))) _Thread_local char g_bionic_guard_pad[256];
-
-/* salva/restaura tpidr+0x28 ao redor de chamadas SDL_GL (Mali escreve la). */
-static SDL_GLContext gl_create_context_guarded(SDL_Window *w) {
-  unsigned long tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
-  unsigned long g = *(unsigned long *)(tp + 0x28);
-  SDL_GLContext c = SDL_GL_CreateContext(w);
-  *(unsigned long *)(tp + 0x28) = g;
-  return c;
-}
-static void gl_swap_guarded(SDL_Window *w) {
-  unsigned long tp; __asm__ volatile("mrs %0, tpidr_el0" : "=r"(tp));
-  unsigned long g = *(unsigned long *)(tp + 0x28);
-  SDL_GL_SwapWindow(w);
-  *(unsigned long *)(tp + 0x28) = g;
-}
 
 /* SDL controller button -> cocos Controller::Key */
 static int map_btn_cocos(int b) {
@@ -223,50 +206,6 @@ static void send_button(int sdl_button, int pressed) {
   }
 }
 
-/* Abre TODOS os controles reconhecidos, nao so' o primeiro: em varios CFWs o
-   pad embutido nao e' o indice 0, e um pad extra (BT/USB) precisa funcionar
-   junto. Todos alimentam o mesmo boundary nativo da engine. */
-#define CT_MAX_PADS 4
-static SDL_GameController *g_pads[CT_MAX_PADS];
-static void open_gamepad(void) {
-  for (int i = 0; i < SDL_NumJoysticks(); i++) {
-    if (!SDL_IsGameController(i)) continue;
-    SDL_JoystickID id = SDL_JoystickGetDeviceInstanceID(i);
-    int already = 0, slot = -1;
-    for (int s = 0; s < CT_MAX_PADS; s++) {
-      if (g_pads[s]) {
-        if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_pads[s])) == id)
-          already = 1;
-      } else if (slot < 0) slot = s;
-    }
-    if (already || slot < 0) continue;
-    SDL_GameController *c = SDL_GameControllerOpen(i);
-    if (!c) continue;
-    g_pads[slot] = c;
-    if (!g_gamepad) g_gamepad = c;
-    debugPrintf("Gamepad[%d]: %s (instance=%d)\n", slot,
-                SDL_GameControllerName(c), (int)id);
-  }
-  if (!g_gamepad) debugPrintf("Nenhum controle reconhecido pelo SDL ainda\n");
-}
-static void close_gamepads(void) {
-  for (int s = 0; s < CT_MAX_PADS; s++)
-    if (g_pads[s]) { SDL_GameControllerClose(g_pads[s]); g_pads[s] = NULL; }
-  g_gamepad = NULL;
-}
-static void drop_gamepad(SDL_JoystickID id) {
-  for (int s = 0; s < CT_MAX_PADS; s++) {
-    if (!g_pads[s]) continue;
-    if (SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(g_pads[s])) != id)
-      continue;
-    if (g_gamepad == g_pads[s]) g_gamepad = NULL;
-    SDL_GameControllerClose(g_pads[s]);
-    g_pads[s] = NULL;
-  }
-  for (int s = 0; s < CT_MAX_PADS && !g_gamepad; s++)
-    if (g_pads[s]) g_gamepad = g_pads[s];
-}
-
 extern void opensles_shim_pump_callbacks(void) __attribute__((weak));
 
 /* valor do enum LocalizationLanguageType p/ ingles (ajustavel via CHRONO_LANG) */
@@ -308,76 +247,6 @@ static void my_onKeyDown(void *self, void *ctrl, int key, void *ev) {
 extern const unsigned char *glGetString(unsigned name);
 extern void glReadPixels(int x, int y, int w, int h, unsigned fmt, unsigned type, void *px);
 extern void glFinish(void);
-
-/* ------------------------------------------------- scanout OPACO no present --
- * O Cocos deixa no backbuffer o alpha do PROPRIO jogo. Medido neste port no
- * Mali-450: a tela de menu sai com alpha 0 em 78,5% dos pixels e alpha 255 so'
- * onde ha arte; durante o fade do titulo chega a 97,6% de alpha 0.
- *
- * Compositor que IGNORA o alpha por pixel mostra a imagem assim mesmo -- e' o
- * caso do OSD do Amlogic como o NextOS o configura e do plano opaco do KMSDRM
- * no ArkOS, os dois aparelhos onde o port foi validado. Compositor que HONRA o
- * alpha entende a mesma tela como quase toda transparente e o painel fica
- * PRETO exatamente depois de o titulo desaparecer.
- *
- * Mesmo mecanismo ja pago no Horizon Chase, no LSWTFA e nos quatro Zenonia,
- * que forcam o alpha opaco antes do swap. Aqui faltava.
- *
- * ARMADILHA (custou a v1.2.0 do Horizon Chase): o driver GLES3 chega no swap
- * com um FBO != 0 amarrado, e o clear vai parar no FBO em vez do backbuffer --
- * a flag fica ligada e o conserto nao acontece. Por isso lemos o desenho
- * amarrado, trocamos por 0, limpamos SO' o alpha e devolvemos o que estava; e
- * logamos UMA vez que rodou de fato, com o FBO que estava la. */
-extern void glColorMask(unsigned char r, unsigned char g, unsigned char b, unsigned char a);
-extern void glClear(unsigned mask);
-extern void glClearColor(float r, float g, float b, float a);
-extern void glBindFramebuffer(unsigned target, unsigned framebuffer);
-extern void glGetIntegerv(unsigned pname, int *params);
-extern void glGetFloatv(unsigned pname, float *params);
-extern unsigned char glIsEnabled(unsigned cap);
-extern void glEnable(unsigned cap);
-extern void glDisable(unsigned cap);
-
-#define CT_GL_SCISSOR_TEST      0x0C11u
-#define CT_GL_COLOR_CLEAR_VALUE 0x0C22u
-#define CT_GL_COLOR_BUFFER_BIT  0x4000u
-#define CT_GL_FRAMEBUFFER       0x8D40u
-/* 0x8CA6 e' GL_FRAMEBUFFER_BINDING no ES2 e GL_DRAW_FRAMEBUFFER_BINDING no
-   ES3: mesmo valor, entao a consulta serve nos dois. */
-#define CT_GL_FRAMEBUFFER_BINDING 0x8CA6u
-
-static void ct_force_opaque_scanout(void) {
-  static int enabled = -1;
-  if (enabled < 0) {
-    const char *e = getenv("CHRONO_OPAQUE");   /* =0 desliga, so' p/ comparar */
-    enabled = e ? (atoi(e) != 0) : 1;
-    if (!enabled) debugPrintf("VIDEO scanout opaco DESLIGADO por CHRONO_OPAQUE=0\n");
-  }
-  if (!enabled) return;
-
-  int prev_fb = 0;
-  glGetIntegerv(CT_GL_FRAMEBUFFER_BINDING, &prev_fb);
-  unsigned char scissor = glIsEnabled(CT_GL_SCISSOR_TEST);
-  float cc[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
-  glGetFloatv(CT_GL_COLOR_CLEAR_VALUE, cc);
-
-  if (scissor) glDisable(CT_GL_SCISSOR_TEST);
-  if (prev_fb) glBindFramebuffer(CT_GL_FRAMEBUFFER, 0u);
-  glColorMask(0, 0, 0, 1);
-  glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-  glClear(CT_GL_COLOR_BUFFER_BIT);
-  glColorMask(1, 1, 1, 1);
-  glClearColor(cc[0], cc[1], cc[2], cc[3]);
-  if (prev_fb) glBindFramebuffer(CT_GL_FRAMEBUFFER, (unsigned)prev_fb);
-  if (scissor) glEnable(CT_GL_SCISSOR_TEST);
-
-  static int logged = 0;
-  if (!logged) {
-    logged = 1;
-    debugPrintf("VIDEO scanout opaco aplicado (FBO amarrado no swap=%d, "
-                "scissor=%d)\n", prev_fb, (int)scissor);
-  }
-}
 static void chrono_dump_shot(int w, int h, int frame) {
   size_t n = (size_t)w * h * 4;
   unsigned char *buf = malloc(n);
@@ -410,158 +279,67 @@ int main(int argc, char *argv[]) {
   ct_install_signal_handlers();
   debugPrintf("RAM MemTotal=%ld kB\n", ct_mem_total_kb());
 
-  /* VIDEO e AUDIO sao subsistemas INDEPENDENTES (audio-backend.md §2). Um
-     PulseAudio herdado e morto ja derrubou o SDL_Init inteiro e o jogo nao
-     abria — custou release corretiva no Oceanhorn v1.0.2 e no Horizon v1.0.3.
-     Aqui: sem video nao ha jogo (fatal); sem audio o jogo abre mudo e diz. */
-  if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
-    /* Backend HERDADO invalido: uma unica nova tentativa com a variavel
-       removida, devolvendo a autodeteccao ao SDL (video-backend.md §1, SOR4).
-       Nao escolhemos outro backend — apenas paramos de impor o herdado. */
-    const char *inherited = getenv("SDL_VIDEODRIVER");
-    debugPrintf("VIDEO: SDL_Init falhou (%s); herdado=%s\n", SDL_GetError(),
-                inherited ? inherited : "nenhum");
-    if (!inherited) fatal_error("SDL_Init: %s", SDL_GetError());
-    unsetenv("SDL_VIDEODRIVER");
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0)
-      fatal_error("SDL_Init: %s", SDL_GetError());
-    debugPrintf("VIDEO: autodeteccao aceita apos remover o SDL_VIDEODRIVER herdado\n");
-  }
+  ct_framework *framework = ct_framework_create();
+  if (!framework)
+    fatal_error("ct_framework_create");
+  if (ct_framework_preflight(framework, ct_gamedir()) != 0)
+    fatal_error("nxcompat preflight failed");
+
+  /* Audio continua independente e nao-fatal. O backend herdado/default nao e
+     reescrito; o receipt forte so nasce quando o OpenSL shim abre o device. */
   ct_init_audio_subsystem();
 
-  SDL_DisplayMode dm;
-  if (SDL_GetDesktopDisplayMode(0, &dm) != 0)
-    fatal_error("SDL_GetDesktopDisplayMode: %s", SDL_GetError());
-
-  /* Escada de EGLConfig (video-backend.md §4): a PRIMEIRA linha e' exatamente o
-     que o port ja validou no Mali-450 e no R36S; as seguintes so' entram se o
-     driver recusar a anterior. Driver sem RGBA8888/D24S8 deixava de abrir. */
-  static const struct { int alpha, depth, stencil; } ladder[] = {
-    { 8, 24, 8 }, { 8, 16, 0 }, { 8, 0, 0 }, { 0, 24, 8 }, { 0, 16, 0 }, { 0, 0, 0 }
-  };
   SDL_Window *window = NULL;
-  SDL_GLContext glc = NULL;
-  for (size_t attempt = 0; attempt < sizeof ladder / sizeof ladder[0]; ++attempt) {
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
-    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
-    SDL_GL_SetAttribute(SDL_GL_ALPHA_SIZE, ladder[attempt].alpha);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, ladder[attempt].depth);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, ladder[attempt].stencil);
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-
-    if (!window) {
-      window = SDL_CreateWindow("Chrono Trigger",
-          SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, dm.w, dm.h,
-          SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_FULLSCREEN);
-      if (!window) {
-        debugPrintf("VIDEO: SDL_CreateWindow falhou com A%d D%d S%d (%s)\n",
-                    ladder[attempt].alpha, ladder[attempt].depth,
-                    ladder[attempt].stencil, SDL_GetError());
-        continue;
-      }
-    }
-    glc = gl_create_context_guarded(window);
-    if (glc) {
-      if (attempt)
-        debugPrintf("VIDEO: contexto obtido na tentativa %zu (A%d D%d S%d)\n",
-                    attempt + 1, ladder[attempt].alpha, ladder[attempt].depth,
-                    ladder[attempt].stencil);
-      /* Mesa pode devolver DESKTOP GL: os shaders do Cocos sao GLSL ES e a tela
-         fica preta (video-backend.md §5). Validar depois de criar e, se vier
-         desktop, refazer UMA vez pedindo explicitamente o driver GLES. */
-      const char *gl_version = (const char *)glGetString(0x1F02u /*GL_VERSION*/);
-      if (gl_version && !strstr(gl_version, "OpenGL ES")) {
-        debugPrintf("VIDEO: driver devolveu contexto DESKTOP (%s); refazendo com "
-                    "o driver GLES\n", gl_version);
-        SDL_GL_DeleteContext(glc);
-        glc = NULL;
-        SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, "1");
-        glc = gl_create_context_guarded(window);
-        gl_version = glc ? (const char *)glGetString(0x1F02u) : NULL;
-        if (!glc || (gl_version && !strstr(gl_version, "OpenGL ES"))) {
-          debugPrintf("VIDEO: ainda sem contexto GLES (%s); tentando a proxima "
-                      "config\n", gl_version ? gl_version : SDL_GetError());
-          if (glc) { SDL_GL_DeleteContext(glc); glc = NULL; }
-          SDL_DestroyWindow(window);
-          window = NULL;
-          continue;
-        }
-      }
-      break;
-    }
-    debugPrintf("VIDEO: contexto recusado com A%d D%d S%d (%s)\n",
-                ladder[attempt].alpha, ladder[attempt].depth,
-                ladder[attempt].stencil, SDL_GetError());
-    SDL_DestroyWindow(window);
-    window = NULL;
-  }
-  if (!window) fatal_error("SDL_CreateWindow: %s", SDL_GetError());
-  if (!glc) fatal_error("SDL_GL_CreateContext: %s", SDL_GetError());
-  /* O DRAWABLE REAL manda: 1280x720 no Mali-450 fbdev, 640x480 no R36S. Nada
-     de resolucao cravada — tudo (nativeInit, toque injetado, screenshot) usa
-     estes w/h. */
-  int w, h; SDL_GL_GetDrawableSize(window, &w, &h);
-  if (w <= 0 || h <= 0) { w = dm.w; h = dm.h; }
+  int w = 0, h = 0;
+  if (ct_framework_open_graphics(framework, &window, &w, &h) != 0)
+    fatal_error("nxgl open failed: %s", SDL_GetError());
   ct_log_video_profile(window, w, h);
 
-  /* KMSDRM precisa do glFinish antes do swap (30 -> 60fps); fbdev nao. */
-  int finish_before_swap = ct_needs_finish_before_swap();
-  debugPrintf("VIDEO glFinish antes do swap: %s\n", finish_before_swap ? "sim" : "nao");
-
-  open_gamepad();
+  if (ct_framework_open_input(framework) != 0)
+    fatal_error("nxinput open failed: %s", SDL_GetError());
   ct_exit_chord_open();
 
   /* ---- 1) libc++_shared.so (LLVM libc++ do Android, namespace std::__ndk1) ----
      libchrono importa centenas de simbolos dela; carregamos como modulo auxiliar. */
-  size_t cxx_size = 32 * 1024 * 1024;
-  void *cxx_heap = mmap(NULL, cxx_size, PROT_READ | PROT_WRITE | PROT_EXEC,
-                        MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (cxx_heap == MAP_FAILED) fatal_error("mmap libc++ heap");
-  if (so_load("libc++_shared.so", cxx_heap, cxx_size) < 0) fatal_error("so_load libc++_shared.so");
-  debugPrintf("Loaded libc++_shared.so: text=%p+%zu\n", text_base, text_size);
-  if (so_relocate() < 0) fatal_error("so_relocate libc++");
-  if (so_resolve(dynlib_functions, dynlib_functions_count, 0) < 0) fatal_error("so_resolve libc++");
-  //so_debug_scan_got();
-  so_make_text_writable();
-  so_flush_caches();
-  so_execute_init_array();
-  so_module *m_cxx = so_save();
+  if (ct_framework_load_libcxx(framework, "libc++_shared.so",
+                               dynlib_functions,
+                               (size_t)dynlib_functions_count) != 0)
+    fatal_error("nxloader libc++_shared.so");
 
   /* ---- 2) libchrono.so (engine Cocos2d-x + jogo), resolve contra libc++ ---- */
-  size_t heap_size = (size_t)MEMORY_MB * 1024 * 1024;
-  void *heap = mmap(NULL, heap_size, PROT_READ | PROT_WRITE | PROT_EXEC,
-                    MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-  if (heap == MAP_FAILED) fatal_error("mmap heap %d MB", MEMORY_MB);
+  if (ct_framework_load_game(framework, SO_NAME) != 0)
+    fatal_error("nxloader %s", SO_NAME);
 
-  if (so_load(SO_NAME, heap, heap_size) < 0) fatal_error("so_load %s", SO_NAME);
-  debugPrintf("Loaded %s: text=%p+%zu data=%p+%zu\n", SO_NAME, text_base, text_size, data_base, data_size);
-  so_set_aux_module(m_cxx);
-  if (so_relocate() < 0) fatal_error("so_relocate");
-  if (so_resolve(dynlib_functions, dynlib_functions_count, 0) < 0) fatal_error("so_resolve");
-  so_make_text_writable();
-  so_flush_caches();
-  so_execute_init_array();
-
-  JNI_OnLoad      = (void *)so_find_addr("JNI_OnLoad");
-  nativeSetContext= (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxHelper_nativeSetContext");
-  nativeSetApkPath= (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxHelper_nativeSetApkPath");
-  setAssetManager = (void *)so_find_addr("Java_org_cocos2dx_cpp_AppActivity_setAssetManager");
-  setExternalStorageInfo = (void *)so_find_addr("Java_org_cocos2dx_cpp_AppActivity_setExternalStorageInfo");
-  nativeInit      = (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeInit");
-  nativeRender    = (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender");
-  nativeOnPause   = (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnPause");
-  nativeOnResume  = (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnResume");
-  nativeKeyEvent  = (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyEvent");
-  ctrlConnected   = (void *)so_find_addr("Java_org_cocos2dx_lib_GameControllerAdapter_nativeControllerConnected");
-  ctrlButton      = (void *)so_find_addr("Java_org_cocos2dx_lib_GameControllerAdapter_nativeControllerButtonEvent");
-  ctrlAxis        = (void *)so_find_addr("Java_org_cocos2dx_lib_GameControllerAdapter_nativeControllerAxisEvent");
-  nativeTouchesBegin = (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesBegin");
-  nativeTouchesEnd   = (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesEnd");
-  nativeTouchesMove  = (void *)so_find_addr("Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesMove");
+  nativeSetContext = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxHelper_nativeSetContext", 0);
+  nativeSetApkPath = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxHelper_nativeSetApkPath", 0);
+  setAssetManager = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_cpp_AppActivity_setAssetManager", 0);
+  setExternalStorageInfo = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_cpp_AppActivity_setExternalStorageInfo", 0);
+  nativeInit = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeInit", 1);
+  nativeRender = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeRender", 1);
+  nativeOnPause = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnPause", 0);
+  nativeOnResume = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeOnResume", 0);
+  nativeKeyEvent = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeKeyEvent", 0);
+  ctrlConnected = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_GameControllerAdapter_nativeControllerConnected", 0);
+  ctrlButton = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_GameControllerAdapter_nativeControllerButtonEvent", 0);
+  ctrlAxis = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_GameControllerAdapter_nativeControllerAxisEvent", 0);
+  nativeTouchesBegin = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesBegin", 0);
+  nativeTouchesEnd = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesEnd", 0);
+  nativeTouchesMove = (void *)ct_framework_find_export(framework,
+      "Java_org_cocos2dx_lib_Cocos2dxRenderer_nativeTouchesMove", 0);
 
   if (!nativeInit || !nativeRender)
     fatal_error("missing Cocos2dxRenderer nativeInit/nativeRender");
@@ -570,10 +348,13 @@ int main(int argc, char *argv[]) {
      retornar o enum de ingles (CHRONO_LANG, default 1). Todas as leituras de
      idioma passam por aqui -> jogo carrega 007-en.dat e UI em ingles. */
   {
-    uintptr_t glang = so_find_addr_safe("_ZN10DeviceInfo18getCurrentLanguageEv");
+    uintptr_t glang = ct_framework_find_export(
+        framework, "_ZN10DeviceInfo18getCurrentLanguageEv", 0);
     if (glang) {
       extern int chrono_forced_lang(void);
-      hook_arm64(glang, (uintptr_t)&chrono_forced_lang);
+      if (ct_framework_install_hook(framework, glang,
+                                    (uintptr_t)&chrono_forced_lang) != 0)
+        fatal_error("nxloader hook getCurrentLanguage");
       debugPrintf("hooked DeviceInfo::getCurrentLanguage -> forced lang %d\n", chrono_forced_lang());
     } else debugPrintf("WARN: getCurrentLanguage symbol nao achado\n");
   }
@@ -582,12 +363,24 @@ int main(int argc, char *argv[]) {
      forcar isConnected garante que toda cena processe o input do controle.
      (CHRONO_NOFORCECONN=1 desativa.) */
   if (!getenv("CHRONO_NOFORCECONN")) {
-    uintptr_t isc = so_find_addr_safe("_ZN14GameController11isConnectedEv");
-    if (isc) { hook_arm64(isc, (uintptr_t)&chrono_force_connected); debugPrintf("hooked GameController::isConnected -> 1\n"); }
+    uintptr_t isc = ct_framework_find_export(
+        framework, "_ZN14GameController11isConnectedEv", 0);
+    if (isc) {
+      if (ct_framework_install_hook(framework, isc,
+                                    (uintptr_t)&chrono_force_connected) != 0)
+        fatal_error("nxloader hook GameController::isConnected");
+      debugPrintf("hooked GameController::isConnected -> 1\n");
+    }
   }
   if (getenv("CHRONO_HOOKKD")) {
-    uintptr_t kd = so_find_addr_safe("_ZN14GameController9onKeyDownEPN7cocos2d10ControllerEiPNS0_5EventE");
-    if (kd) { g_onkd_orig = (onkd_t)make_passthrough(kd); hook_arm64(kd, (uintptr_t)&my_onKeyDown);
+    uintptr_t kd = ct_framework_find_export(
+        framework,
+        "_ZN14GameController9onKeyDownEPN7cocos2d10ControllerEiPNS0_5EventE",
+        0);
+    if (kd) { g_onkd_orig = (onkd_t)make_passthrough(kd);
+              if (!g_onkd_orig || ct_framework_install_hook(
+                    framework, kd, (uintptr_t)&my_onKeyDown) != 0)
+                fatal_error("nxloader hook GameController::onKeyDown");
               debugPrintf("hooked GameController::onKeyDown @0x%lx (passthrough=%p)\n", kd, (void*)g_onkd_orig); }
     else debugPrintf("WARN onKeyDown symbol nao achado\n");
   }
@@ -596,10 +389,13 @@ int main(int argc, char *argv[]) {
      MESMO pedido de shutdown (SELECT+START / SIGTERM / exit() do JNI) e ainda
      chama a original, para o cocos limpar as cenas normalmente. */
   {
-    uintptr_t dend = so_find_addr_safe("_ZN7cocos2d8Director3endEv");
+    uintptr_t dend = ct_framework_find_export(
+        framework, "_ZN7cocos2d8Director3endEv", 0);
     if (dend) {
       g_director_end_orig = (director_end_t)make_passthrough(dend);
-      hook_arm64(dend, (uintptr_t)&my_director_end);
+      if (!g_director_end_orig || ct_framework_install_hook(
+            framework, dend, (uintptr_t)&my_director_end) != 0)
+        fatal_error("nxloader hook cocos2d::Director::end");
       debugPrintf("hooked cocos2d::Director::end -> shutdown unico\n");
     } else debugPrintf("WARN: Director::end nao achado\n");
   }
@@ -609,8 +405,10 @@ int main(int argc, char *argv[]) {
   g_env = fake_env;
   g_vendor = jni_make_string("Xbox Wireless Controller"); /* nome Xbox padrao */
 
-  debugPrintf("JNI_OnLoad...\n");
-  if (JNI_OnLoad) JNI_OnLoad(fake_vm, NULL);
+  int32_t jni_version = 0;
+  debugPrintf("constructors -> JNI_OnLoad...\n");
+  if (ct_framework_start_game(framework, fake_vm, &jni_version) != 0)
+    fatal_error("nxloader constructors/JNI_OnLoad");
 
   void *dummy = (void *)0xDEADBEEF;
   /* Caminhos derivados do diretorio REAL do port, nunca cravados: o CFW decide
@@ -645,16 +443,19 @@ int main(int argc, char *argv[]) {
   while (!ct_exit_requested()) {
     flush_pending_releases();
     ct_exit_chord_poll();
-    if (announce_at > 0 && --announce_at == 0 && ctrlConnected && !g_use_keyboard) {
+    if (announce_at > 0 && --announce_at == 0 && ctrlConnected &&
+        ct_framework_has_controller(framework) && !g_use_keyboard) {
       ctrlConnected(g_env, NULL, g_vendor, 0);
       debugPrintf("Controle anunciado a engine (cena viva)\n");
     }
     while (SDL_PollEvent(&e)) {
+      ct_framework_observe_input(framework, &e);
       switch (e.type) {
         case SDL_QUIT: ct_request_exit("SDL_QUIT"); break;
         case SDL_CONTROLLERDEVICEADDED:
-          open_gamepad();
-          if (ctrlConnected && !g_use_keyboard) ctrlConnected(g_env, NULL, g_vendor, 0);
+          if (ctrlConnected && ct_framework_has_controller(framework) &&
+              !g_use_keyboard)
+            ctrlConnected(g_env, NULL, g_vendor, 0);
           break;
         case SDL_WINDOWEVENT:
           if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) release_all_buttons();
@@ -662,7 +463,6 @@ int main(int argc, char *argv[]) {
         case SDL_CONTROLLERDEVICEREMOVED:
           /* Hotplug/perda de foco nao pode deixar direcao presa. */
           release_all_buttons();
-          drop_gamepad(e.cdevice.which);
           debugPrintf("Gamepad instance=%d removido\n", (int)e.cdevice.which);
           break;
         case SDL_KEYDOWN: case SDL_KEYUP: {
@@ -679,7 +479,8 @@ int main(int argc, char *argv[]) {
         case SDL_CONTROLLERBUTTONUP:
           send_button(e.cbutton.button, 0); break;
         case SDL_CONTROLLERAXISMOTION:
-          if (g_gamepad && !g_use_keyboard && ctrlAxis) {
+          if (ct_framework_has_controller(framework) && !g_use_keyboard &&
+              ctrlAxis) {
             int a = -1;
             if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) a = CK_JOYSTICK_LEFT_X;
             else if (e.caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) a = CK_JOYSTICK_LEFT_Y;
@@ -690,6 +491,9 @@ int main(int argc, char *argv[]) {
           break;
       }
     }
+    ct_framework_poll_input(framework);
+    if (ct_framework_consume_quit(framework))
+      ct_request_exit("SELECT+START (nxinput)");
     /* CHRONO_AUTOPRESS=1: 0-12s toque(passa titulo); 12s+ conecta controle e
        alterna DPAD_RIGHT/LEFT (controller nativo E teclado) p/ navegar menu. */
     if (getenv("CHRONO_AUTOPRESS")) {
@@ -752,11 +556,6 @@ int main(int argc, char *argv[]) {
        (desacoplado do framerate) -> sem gagueira por hitch de frame. */
     nativeRender(g_env, NULL);
 
-    /* Antes de qualquer leitura ou present: o que vai pro scanout tem que ser
-       opaco. Fica ANTES das capturas de proposito -- assim o shot mostra o que
-       o painel recebe, e nao so' o que a engine desenhou. */
-    ct_force_opaque_scanout();
-
     /* CHRONO_SHOTS="200,600,1200": captura glReadPixels nesses frames, SEM
        injetar nada. glReadPixels precisa vir ANTES do swap. */
     /* CHRONO_SHOTEVERY=N: filmstrip de diagnostico, 1 captura a cada N frames
@@ -780,8 +579,8 @@ int main(int argc, char *argv[]) {
         if (*p == ',') p++;
       }
     }
-    if (finish_before_swap) glFinish();
-    gl_swap_guarded(window);
+    if (ct_framework_present(framework) != 0)
+      ct_request_exit("nxgl present failure");
 
     /* CHRONO_FPSLOG=1: fps medido 1x/s (nao entra no caminho normal). */
     if (getenv("CHRONO_FPSLOG")) {
@@ -812,9 +611,8 @@ int main(int argc, char *argv[]) {
   ct_start_shutdown_watchdog(8);
   if (nativeOnPause) nativeOnPause(g_env, NULL);
   ct_exit_chord_close();
-  close_gamepads();
-  SDL_GL_DeleteContext(glc);
-  SDL_DestroyWindow(window);
+  ct_framework_close_input(framework);
+  ct_framework_close_graphics(framework);
   SDL_Quit();
   ct_single_instance_unlock();
   return 0;

@@ -5,12 +5,11 @@ Copyright 2026 NextOS contributors, and is distributed under GNU General Public
 License version 3. The complete license text is in the repository root and is
 copied into public packages as `LICENSE`.
 
-The AArch64 Android/Bionic compatibility layer (ELF loader, relocations, TLS
-stack-guard pad, `pthread_attr` size bridge, Bionic stdio translation) and the
-fake JNI environment follow patterns proven by the GPL-3.0-licensed NextOS
-ports for Horizon Chase, Terraria and Prizefighters 2. The Cocos2d-x 3.14.1
-lifecycle, the OpenSL ES audio bridge, the FreeType text-bitmap path and the
-`GameControllerAdapter` input interoperability were developed for this port.
+The common compatibility components (`nxbootstrap`, `nxcompat`, `nxloader`,
+`nxgl`, `nxinput` and `nxaudio`) and the Chrono-specific AArch64/Bionic adapter
+are GPL-3.0. The fake JNI environment, Cocos2d-x 3.14.1 lifecycle, OpenSL ES
+audio bridge, FreeType text-bitmap path and native `GameControllerAdapter`
+interoperability remain specific to this port.
 
 SDL2, EGL/GLES2, FreeType and the standard system libraries are supplied by the
 target firmware and are not bundled. The public executable is built against
@@ -22,10 +21,9 @@ Android system font (Roboto) that the game expects but does not ship; no font
 from an Android device is redistributed. When the firmware already provides a
 suitable sans font, that one is preferred at runtime.
 
-NXExtract (the vendored BYO-data installer: `nxextract.py`, `nxextract-ui`,
-`nxextract-runtime-env.sh`, `run-extractor.sh`) is distributed under the MIT
-license — see `licenses/NXExtract-MIT.txt`; version and hashes are pinned in
-`nxextract-version.txt`.
+NXExtract (the vendored BYO-data installer under `nxextract/`) is distributed
+under the MIT license — see `licenses/NXExtract-MIT.txt`; version 1.2.6 and the
+hash of every runtime file are pinned in `nxextract-version.txt`.
 
 Chrono Trigger, its Android APK, `libchrono.so`, `libc++_shared.so`,
 `libencrypt.so`, the encrypted asset archives (`resources.bin`, `00N.dat`),

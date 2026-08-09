@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.4
+
+This is the publication release of the exact Chrono framework-pilot package
+accepted on both supported stacks. The downloadable ZIP is byte-for-byte the
+same package internally identified as 1.0.3; it was deliberately not rebuilt
+after physical acceptance.
+
+- The public repository now carries the framework sources used by the port:
+  `nxloader`, `nxcompat`, `nxgl`, `nxinput` and `nxaudio`.
+- The same ZIP was accepted on a NextOS Mali-450 stack with fbdev/PulseAudio
+  and on an ArkOS RK3326 stack with KMSDRM/ALSA. Video, audio, native controls,
+  the SELECT+START shutdown path and clean return were verified.
+- The release asset is published with a SHA-256 companion file so the tested
+  bytes can be checked after download.
+- No proprietary game data is included. Installation still requires a
+  user-owned Android APK and the bundled NXExtract flow.
+
+Version 1.0.3 remains available as the rollback release. Tag 1.0.4 records the
+source/framework promotion and publishes the already-tested package; it does
+not claim a new game binary build.
+
 ## 1.0.3
 
 The frame handed to the panel is now opaque. A player on an RG34XX-SP (muOS,

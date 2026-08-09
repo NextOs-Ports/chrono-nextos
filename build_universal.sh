@@ -14,8 +14,14 @@ set -euo pipefail
 
 PORT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 OUTPUT=${CT_UNIVERSAL_OUTPUT:-chrono-universal}
+BUILDER_IMAGE=playfetch-builder:buster
+BUILDER_IMAGE_ID=sha256:036c7910ea53bc78cc213452afa92fa83d55de1c51ae54f315af58b5a41a45cf
+export LC_ALL=C
+export TZ=UTC
+export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1785628800}
 
 if [ "${CT_BUSTER_IN_CONTAINER:-0}" != "1" ]; then
+  REPOSITORY_ROOT=$(git -C "$PORT_DIR" rev-parse --show-toplevel)
   NEXTOS_ROOT=${NEXTOS_ROOT:-"$HOME/NextOS-Elite-Edition"}
   NEXTOS_TOOLCHAIN=$(
     find -H "$NEXTOS_ROOT" -maxdepth 2 -type d \
@@ -29,43 +35,64 @@ if [ "${CT_BUSTER_IN_CONTAINER:-0}" != "1" ]; then
     { echo "sysroot NextOS nao encontrado: $NEXTOS_SYSROOT" >&2; exit 1; }
   command -v docker >/dev/null 2>&1 ||
     { echo "docker e' necessario para a build GLIBC <= 2.30" >&2; exit 1; }
+  ACTUAL_IMAGE_ID=$(docker image inspect "$BUILDER_IMAGE" \
+    --format '{{.Id}}' 2>/dev/null) ||
+    { echo "imagem offline M17 ausente: $BUILDER_IMAGE" >&2; exit 1; }
+  [ "$ACTUAL_IMAGE_ID" = "$BUILDER_IMAGE_ID" ] || {
+    echo "imagem M17 mudou: $ACTUAL_IMAGE_ID (esperado $BUILDER_IMAGE_ID)" >&2
+    exit 1
+  }
 
-  exec docker run --rm \
+  exec docker run --rm --network none \
     -e CT_BUSTER_IN_CONTAINER=1 \
     -e CT_UNIVERSAL_OUTPUT="$OUTPUT" \
     -e CT_HOST_UID="$(id -u)" \
     -e CT_HOST_GID="$(id -g)" \
+    -e LC_ALL=C -e TZ=UTC -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
     -v "$PORT_DIR":/repo \
+    -v "$REPOSITORY_ROOT/framework":/framework:ro \
     -v "$NEXTOS_SYSROOT":/nxsr:ro \
-    debian:buster \
+    "$BUILDER_IMAGE_ID" \
     bash /repo/build_universal.sh
 fi
 
-export DEBIAN_FRONTEND=noninteractive
-if ! command -v aarch64-linux-gnu-gcc >/dev/null 2>&1; then
-  printf '%s\n' \
-    'deb http://archive.debian.org/debian buster main' \
-    'deb http://archive.debian.org/debian-security buster/updates main' \
-    > /etc/apt/sources.list
-  apt-get -o Acquire::Check-Valid-Until=false update -qq >/dev/null
-  apt-get install -y -qq --no-install-recommends \
-    gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
-    libc6-dev-arm64-cross file >/dev/null
-fi
+for tool in aarch64-linux-gnu-gcc aarch64-linux-gnu-nm \
+            aarch64-linux-gnu-readelf file; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "ferramenta ausente na imagem M17 fixada: $tool" >&2
+    exit 1
+  }
+done
 
 CC=aarch64-linux-gnu-gcc
 NM=aarch64-linux-gnu-nm
 READELF=aarch64-linux-gnu-readelf
+FRAMEWORK_ROOT=${CT_FRAMEWORK_ROOT:-/framework}
 cd /repo
 
 OBJDIR=$(mktemp -d)
 STUBDIR=$(mktemp -d)
 trap 'rm -rf "$OBJDIR" "$STUBDIR"' EXIT
 
+COMMON_INCLUDES=(
+  -I src
+  -I "$FRAMEWORK_ROOT/nxloader/include"
+  -I "$FRAMEWORK_ROOT/nxloader/src"
+  -I "$FRAMEWORK_ROOT/nxcompat/include"
+  -I "$FRAMEWORK_ROOT/nxcompat/src"
+  -I "$FRAMEWORK_ROOT/nxgl/include"
+  -I "$FRAMEWORK_ROOT/nxgl/src"
+  -I "$FRAMEWORK_ROOT/nxinput/include"
+  -I "$FRAMEWORK_ROOT/nxinput/src"
+  -I "$FRAMEWORK_ROOT/nxaudio/include"
+)
+
 OBJS=()
-for source in src/*.c; do
-  object="$OBJDIR/$(basename "${source%.c}").o"
-  "$CC" -D_GNU_SOURCE -I src \
+compile_source() {
+  group=$1
+  source=$2
+  object="$OBJDIR/${group}_$(basename "${source%.c}").o"
+  "$CC" -D_GNU_SOURCE -std=gnu11 "${COMMON_INCLUDES[@]}" \
     -idirafter /nxsr/usr/include \
     -idirafter /nxsr/usr/include/SDL2 \
     -idirafter /nxsr/usr/include/freetype2 \
@@ -74,7 +101,52 @@ for source in src/*.c; do
     -Wno-unused-parameter -Wno-unused-function \
     -c "$source" -o "$object"
   OBJS+=("$object")
+}
+
+for source in src/*.c; do
+  compile_source chrono "$source"
 done
+
+for source in \
+  "$FRAMEWORK_ROOT"/nxloader/src/nxloader.c \
+  "$FRAMEWORK_ROOT"/nxloader/src/nxloader_elf32.c \
+  "$FRAMEWORK_ROOT"/nxloader/src/nxloader_elf64.c \
+  "$FRAMEWORK_ROOT"/nxloader/src/nxloader_hooks.c \
+  "$FRAMEWORK_ROOT"/nxloader/src/nxloader_protect.c \
+  "$FRAMEWORK_ROOT"/nxloader/src/nxloader_registry.c; do
+  compile_source nxloader "$source"
+done
+
+for source in \
+  "$FRAMEWORK_ROOT"/nxcompat/src/nxcompat.c \
+  "$FRAMEWORK_ROOT"/nxcompat/src/nxcompat_backend.c \
+  "$FRAMEWORK_ROOT"/nxcompat/src/nxcompat_graphics.c \
+  "$FRAMEWORK_ROOT"/nxcompat/src/nxcompat_probe.c \
+  "$FRAMEWORK_ROOT"/nxcompat/src/nxcompat_plan.c \
+  "$FRAMEWORK_ROOT"/nxcompat/src/nxcompat_receipts.c \
+  "$FRAMEWORK_ROOT"/nxcompat/src/nxcompat_registry.c \
+  "$FRAMEWORK_ROOT"/nxcompat/src/nxcompat_report.c; do
+  compile_source nxcompat "$source"
+done
+
+for source in \
+  "$FRAMEWORK_ROOT"/nxgl/src/nxgl_diagnostics.c \
+  "$FRAMEWORK_ROOT"/nxgl/src/nxgl_logic.c \
+  "$FRAMEWORK_ROOT"/nxgl/src/nxgl_metrics.c \
+  "$FRAMEWORK_ROOT"/nxgl/src/nxgl_present.c \
+  "$FRAMEWORK_ROOT"/nxgl/src/nxgl_sdl2.c \
+  "$FRAMEWORK_ROOT"/nxgl/src/nxgl_nxcompat.c; do
+  compile_source nxgl "$source"
+done
+
+for source in \
+  "$FRAMEWORK_ROOT"/nxinput/src/nxinput.c \
+  "$FRAMEWORK_ROOT"/nxinput/src/nxinput_core.c \
+  "$FRAMEWORK_ROOT"/nxinput/src/nxinput_nxcompat.c; do
+  compile_source nxinput "$source"
+done
+
+compile_source nxaudio "$FRAMEWORK_ROOT/nxaudio/src/nxaudio.c"
 
 # ---- stubs de link: gravam o SONAME certo sem importar a glibc do NextOS ----
 # O aparelho fornece libSDL2-2.0.so.0, libGLESv2.so.2 e libfreetype.so.6.
