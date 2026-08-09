@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
-# Shared pre-main lifecycle for PortMaster ports. This file is vendored beside
-# run.sh; game/engine behavior belongs in the compiled loader, not here.
+# Shared pre-main lifecycle for PortMaster ports. This file is vendored inside
+# the port directory and sourced by the single visible launcher; game/engine
+# behavior belongs in the compiled loader, not here.
 
 if [[ ${NXBOOTSTRAP_LIBRARY_LOADED:-0} == 1 ]] &&
    declare -F nxbootstrap_main >/dev/null 2>&1; then
@@ -36,7 +37,7 @@ NXBOOTSTRAP_INHERITED_LD_LIBRARY_PATH=
 NXBOOTSTRAP_INHERITED_LD_CAPTURED=0
 # Never inherit a process-filesystem override from the launcher environment.
 # Tests that source this library may replace this variable only after sourcing,
-# inside their own process.  A public run.sh always starts from the real procfs.
+# inside their own process. A public launcher always starts from real procfs.
 NXBOOTSTRAP_PROC_ROOT=/proc
 
 nxbootstrap_log() {
@@ -415,7 +416,7 @@ nxbootstrap_open_log() {
   NXBOOTSTRAP_LOG=$log
   exec 1>&"$NXBOOTSTRAP_LOG_FD" 2>&1
   nxbootstrap_log "run_start_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || printf unknown)"
-  nxbootstrap_log "${NXPORT_TITLE} | nxbootstrap ${NXBOOTSTRAP_VERSION:-0.3.1}"
+  nxbootstrap_log "${NXPORT_TITLE} | nxbootstrap ${NXBOOTSTRAP_VERSION:-0.4.0}"
   nxbootstrap_log "game_dir=$NXPORT_GAME_DIR executable=$NXPORT_EXECUTABLE arch=$NXPORT_ARCH schema=$NXPORT_SCHEMA_VERSION"
   nxbootstrap_log "nxextract=${NXPORT_NXEXTRACT:-auto}@${NXPORT_NXEXTRACT_VERSION:-unknown} report=${NXPORT_RUNTIME_REPORT:-log}"
   nxbootstrap_log "required_capabilities=${NXPORT_REQUIRED_CAPABILITIES:-none} enabled_quirks=${NXPORT_ENABLED_QUIRKS:-none}"
@@ -1225,7 +1226,7 @@ nxbootstrap_launch() {
 }
 
 nxbootstrap_main() {
-  NXBOOTSTRAP_VERSION=0.3.1
+  NXBOOTSTRAP_VERSION=0.4.0
   nxbootstrap_validate_config || exit 2
   nxbootstrap_capture_and_filter_inherited_libraries
   nxbootstrap_open_log || exit 2

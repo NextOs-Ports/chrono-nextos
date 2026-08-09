@@ -18,7 +18,7 @@ O seu APK NUNCA e' apagado.
 
 Se aparecer "nenhum conjunto de entrada casa com esta receita", o arquivo
 provavelmente e' de OUTRA build/versao do jogo (ou de outro jogo). Os detalhes
-ficam em nxextract.log, ao lado do run.sh.
+ficam em nxextract.log, dentro da pasta chrono.
 
 EN
 --
@@ -35,4 +35,4 @@ only check the marker. Your APK is never deleted.
 
 If you see "no input set matches this recipe", the file is most likely a
 different build/version of the game (or a different game). Details land in
-nxextract.log next to run.sh.
+nxextract.log inside the chrono directory.

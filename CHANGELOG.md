@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.0.5
+
+Packaging-contract correction: the public ZIP now has one visible PortMaster
+entry point, `Chrono Trigger.sh`. It contains the generated declarative config,
+discovers `chrono/`, loads `chrono/nxbootstrap.sh` directly and calls
+`nxbootstrap_main`. The redundant `chrono/run.sh` layer has been removed from
+the source, package recipe and release gate.
+
+- Runtime/game bytes are unchanged from the physically accepted build.
+- The corrected ZIP passed deterministic host packaging, seven simulated ROM
+  layouts, symlink and FAT-mode tests, and contains 21 entries with no
+  `run.sh`.
+- The exact corrected ZIP was then launched on the accepted NextOS Mali-450
+  stack: PortMaster, NXExtract, JNI, GLES2/Mali video, PulseAudio and native
+  input reached ready state; SIGTERM returned cleanly with no process left.
+- Release v1.0.4 remains available as rollback evidence and was not
+  overwritten.
+
+Corrected ZIP SHA-256:
+`2a9dec87e0742bf00b9e9f3af64e6b00218467e5f7665a769c687427a1f3277f`.
+
 ## 1.0.4
 
 This is the publication release of the exact Chrono framework-pilot package

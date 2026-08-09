@@ -51,7 +51,6 @@ put() {
 
 put 0755 "$PORT_DIR/Chrono Trigger.sh"        "Chrono Trigger.sh"
 put 0755 "$BINARY"                            "chrono/chrono-universal"
-put 0755 "$PORT_DIR/run.sh"                   "chrono/run.sh"
 put 0644 "$PORT_DIR/nxbootstrap.sh"           "chrono/nxbootstrap.sh"
 put 0644 "$PORT_DIR/nxport.json"              "chrono/nxport.json"
 put 0644 "$PORT_DIR/README.md"                "chrono/README.md"
@@ -147,7 +146,7 @@ PAD_LAYOUT=$(readelf -sW "$STAGE/chrono/chrono-universal" |
 
 # Bits +x esperados: nenhuma etapa critica depende deles, mas o zip precisa
 # entregar o conjunto certo (a lista nao pode encolher junto com refactor).
-for expected in "Chrono Trigger.sh" chrono/run.sh chrono/chrono-universal \
+for expected in "Chrono Trigger.sh" chrono/chrono-universal \
                 chrono/nxextract/nxextract.py \
                 chrono/nxextract/nxextract-ui \
                 chrono/nxextract/nxextract-runtime-env.sh \
@@ -156,21 +155,20 @@ for expected in "Chrono Trigger.sh" chrono/run.sh chrono/chrono-universal \
 done
 
 bash -n "$STAGE/Chrono Trigger.sh"
-bash -n "$STAGE/chrono/run.sh"
 bash -n "$STAGE/chrono/nxbootstrap.sh"
 bash -n "$STAGE/chrono/nxextract/nxextract-runtime-env.sh"
 bash -n "$STAGE/chrono/nxextract/run-extractor.sh"
 if grep -En '^[[:space:]]*(export[[:space:]]+)?SDL_(VIDEO|AUDIO)DRIVER=' \
-    "$STAGE/Chrono Trigger.sh" "$STAGE/chrono/run.sh"; then
+    "$STAGE/Chrono Trigger.sh"; then
   fail "o launcher nao pode fixar backend SDL de video ou audio"
 fi
 if grep -En \
     '(^|[[:space:]])(setsid|nohup|systemctl[[:space:]]+(stop|mask|restart)|pkill)([[:space:]]|$)' \
-    "$STAGE/Chrono Trigger.sh" "$STAGE/chrono/run.sh" |
+    "$STAGE/Chrono Trigger.sh" |
     grep -v '^[^:]*:[0-9]*:[[:space:]]*#'; then
   fail "o launcher contem comando de ciclo de vida proibido"
 fi
-if grep -En 'gptokeyb' "$STAGE/Chrono Trigger.sh" "$STAGE/chrono/run.sh" |
+if grep -En 'gptokeyb' "$STAGE/Chrono Trigger.sh" |
     grep -v '^[^:]*:[0-9]*:#'; then
   fail "gptokeyb roubaria o pad: o controle deste port e' NATIVO"
 fi

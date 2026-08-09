@@ -115,7 +115,7 @@ from the target firmware at runtime.
 - `src/jni_shim.c` — stable fake VM/environment and text-bitmap bridge;
 - `src/opensles_shim.c` — game-owned OpenSL ES to SDL audio adapter;
 - `src/imports.c` — explicit Bionic/Android import contracts;
-- `nxport.json`, `run.sh`, `nxbootstrap.sh` — declarative launch contract;
+- `Chrono Trigger.sh`, `nxport.json`, `nxbootstrap.sh` — single-launcher declarative contract;
 - `nxextract/` and `extractor.json` — pinned BYO-data extraction flow.
 
 ## Credits and licenses
@@ -247,5 +247,5 @@ são distribuídos aqui. Veja [NOTICE.md](NOTICE.md).
 - `src/jni_shim.c` — VM/ambiente falsos estáveis e ponte de bitmap de texto;
 - `src/opensles_shim.c` — adapter OpenSL ES para áudio SDL;
 - `src/imports.c` — contratos explícitos de imports Bionic/Android;
-- `nxport.json`, `run.sh`, `nxbootstrap.sh` — contrato declarativo de execução;
+- `Chrono Trigger.sh`, `nxport.json`, `nxbootstrap.sh` — contrato declarativo com launcher único;
 - `nxextract/` e `extractor.json` — extração BYO-data fixada por hash.

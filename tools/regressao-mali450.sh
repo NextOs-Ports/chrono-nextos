@@ -40,9 +40,10 @@ echo "== 3. matar e CONFIRMAR zero instancias (pelo diretorio) =="
 echo "== 4. subir o binario universal e o launcher =="
 "${SSH[@]}" "mkdir -p $GAMEDIR; rm -f $GAMEDIR/chrono-universal"
 "${SCP[@]}" "$PORT_DIR/chrono-universal" "root@$IP:$GAMEDIR/" || exit 1
-"${SCP[@]}" "$PORT_DIR/run.sh" "$PORT_DIR/tools/virtual-pad.py" "root@$IP:$GAMEDIR/" || exit 1
+"${SCP[@]}" "$PORT_DIR/nxbootstrap.sh" "$PORT_DIR/nxport.json" \
+  "$PORT_DIR/tools/virtual-pad.py" "root@$IP:$GAMEDIR/" || exit 1
 "${SCP[@]}" "$PORT_DIR/Chrono Trigger.sh" "root@$IP:/storage/roms/ports_scripts/" 2>/dev/null
-"${SSH[@]}" "chmod +x $GAMEDIR/chrono-universal $GAMEDIR/run.sh;
+"${SSH[@]}" "chmod +x $GAMEDIR/chrono-universal /storage/roms/ports_scripts/Chrono\\ Trigger.sh;
   sha256sum $GAMEDIR/chrono-universal"
 echo "sha local: $(sha256sum "$PORT_DIR/chrono-universal" | cut -d' ' -f1)"
 
@@ -53,7 +54,7 @@ echo "== 5. ciclo completo =="
   export CHRONO_PCMDUMP=1 CHRONO_PCMSKIP=150
   FIFO=/tmp/ctpad.fifo; rm -f \$FIFO; mkfifo \$FIFO
   python3 virtual-pad.py --daemon \$FIFO >/tmp/ctpad.log 2>&1 & PAD=\$!
-  bash run.sh & RUN=\$!
+  bash /storage/roms/ports_scripts/Chrono\\ Trigger.sh & RUN=\$!
   exec 3>\$FIFO; p(){ echo \"\$1\" >&3; }
   sleep 28
   p 'a:0.3'; sleep 5; p 'a:0.3'; sleep 8
