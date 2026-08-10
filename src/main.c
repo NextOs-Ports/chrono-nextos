@@ -17,6 +17,7 @@
 
 #include "ct_framework.h"
 #include "ct_platform.h"
+#include "chrono_language.h"
 #include "error.h"
 #include "imports.h"
 #include "jni_shim.h"
@@ -208,11 +209,6 @@ static void send_button(int sdl_button, int pressed) {
 
 extern void opensles_shim_pump_callbacks(void) __attribute__((weak));
 
-/* valor do enum LocalizationLanguageType p/ ingles (ajustavel via CHRONO_LANG) */
-int chrono_forced_lang(void) {
-  const char *e = getenv("CHRONO_LANG");
-  return e ? atoi(e) : 1;
-}
 /* GameController::isConnected forcado true -> menu poll o controle */
 int chrono_force_connected(void) { return 1; }
 
@@ -344,9 +340,8 @@ int main(int argc, char *argv[]) {
   if (!nativeInit || !nativeRender)
     fatal_error("missing Cocos2dxRenderer nativeInit/nativeRender");
 
-  /* FORCAR INGLES (jamais japones): hooka DeviceInfo::getCurrentLanguage p/
-     retornar o enum de ingles (CHRONO_LANG, default 1). Todas as leituras de
-     idioma passam por aqui -> jogo carrega 007-en.dat e UI em ingles. */
+  /* O framework valida NXPORT_LANGUAGE; o adapter converte o codigo para o
+     enum original sem alterar o locale Linux ou pular o fluxo do jogo. */
   {
     uintptr_t glang = ct_framework_find_export(
         framework, "_ZN10DeviceInfo18getCurrentLanguageEv", 0);

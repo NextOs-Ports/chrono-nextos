@@ -1,4 +1,4 @@
-# Chrono Trigger 1.0.3 — universal framework pilot
+# Chrono Trigger 1.0.6 — nxbootstrap 0.6.3
 
 A native Linux port of the Android release of **Chrono Trigger** (Cocos2d-x
 3.14.1, GLES2) for retro handhelds. The port is a **compatibility loader**: it
@@ -7,8 +7,8 @@ replaces the Android runtime they expect (JNI, OpenSL ES, asset manager,
 `Cocos2dxBitmap` text rendering) and drives the Cocos2d-x render loop on the
 firmware's own SDL2/EGL/GLES2.
 
-This release is the first complete pilot of the repository's universal
-framework. `nxbootstrap` owns the bounded process lifecycle, `nxcompat`
+This release uses the canonical self-contained `nxbootstrap 0.6.3` launcher.
+`nxbootstrap` owns the bounded process lifecycle, `nxcompat`
 measures capabilities, `nxloader` maps the Android ELFs, `nxgl` opens and
 reports the real GLES2 drawable, `nxinput` owns controller discovery/hotplug,
 and `nxaudio` records the SDL output opened by the game's OpenSL ES bridge.
@@ -92,9 +92,17 @@ from the native controller path.
 
 ## Language
 
-The game picks its string table from the **region code**, not from the language
-setting. The loader reports region 1 (English), so the UI, menus and script are
-in English. Japanese is never selected.
+The Android game selects its string table through a region code. Edit only the
+following line near the top of `Chrono Trigger.sh`:
+
+```bash
+GAME_LANGUAGE="en"
+```
+
+Supported values are `en` (English) and `ja` (Japanese). The framework
+validates the value and exports `NXPORT_LANGUAGE`; the Chrono adapter converts
+it to the original game's exact region code. It does not infer a language from
+the host's global locale.
 
 ## Build
 
@@ -115,7 +123,8 @@ from the target firmware at runtime.
 - `src/jni_shim.c` — stable fake VM/environment and text-bitmap bridge;
 - `src/opensles_shim.c` — game-owned OpenSL ES to SDL audio adapter;
 - `src/imports.c` — explicit Bionic/Android import contracts;
-- `Chrono Trigger.sh`, `nxport.json`, `nxbootstrap.sh` — single-launcher declarative contract;
+- `Chrono Trigger.sh` and `nxport.json` — generated self-contained
+  `nxbootstrap 0.6.3` launcher and declarative contract;
 - `nxextract/` and `extractor.json` — pinned BYO-data extraction flow.
 
 ## Credits and licenses
@@ -139,8 +148,8 @@ Linux, substitui o runtime Android que elas esperam (JNI, OpenSL ES, asset
 manager, o texto do `Cocos2dxBitmap`) e conduz o loop de render do Cocos2d-x
 sobre o SDL2/EGL/GLES2 do próprio firmware.
 
-Esta release é o primeiro piloto completo do framework universal do
-repositório. O `nxbootstrap` controla o ciclo de processo, o `nxcompat` mede as
+Esta release usa o launcher autocontido canônico do `nxbootstrap 0.6.3`. O
+`nxbootstrap` controla o ciclo de processo, o `nxcompat` mede as
 capacidades, o `nxloader` mapeia os ELFs Android, o `nxgl` abre e registra o
 drawable GLES2 real, o `nxinput` cuida da descoberta/hotplug dos controles e o
 `nxaudio` registra a saída SDL aberta pela ponte OpenSL ES do jogo. JNI, assets,
@@ -226,9 +235,17 @@ caminho nativo.
 
 ### Idioma
 
-O jogo escolhe a tabela de textos pelo **código de região**, não pela
-configuração de idioma. O loader informa a região 1 (inglês), então a interface,
-os menus e o roteiro ficam em inglês. Japonês nunca é selecionado.
+O jogo Android escolhe sua tabela de textos por um código de região. Edite
+somente esta linha perto do início de `Chrono Trigger.sh`:
+
+```bash
+GAME_LANGUAGE="en"
+```
+
+Os valores suportados são `en` (inglês) e `ja` (japonês). O framework valida
+o valor e exporta `NXPORT_LANGUAGE`; o adapter do Chrono o converte para o
+código exato do jogo original. O locale global do sistema não é usado para
+inventar outro idioma.
 
 ### Créditos e licenças
 
@@ -247,5 +264,6 @@ são distribuídos aqui. Veja [NOTICE.md](NOTICE.md).
 - `src/jni_shim.c` — VM/ambiente falsos estáveis e ponte de bitmap de texto;
 - `src/opensles_shim.c` — adapter OpenSL ES para áudio SDL;
 - `src/imports.c` — contratos explícitos de imports Bionic/Android;
-- `Chrono Trigger.sh`, `nxport.json`, `nxbootstrap.sh` — contrato declarativo com launcher único;
+- `Chrono Trigger.sh` e `nxport.json` — launcher autocontido gerado pelo
+  `nxbootstrap 0.6.3` e contrato declarativo;
 - `nxextract/` e `extractor.json` — extração BYO-data fixada por hash.

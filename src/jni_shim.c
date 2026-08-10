@@ -10,6 +10,7 @@
  */
 #include "ct_framework.h"
 #include "ct_platform.h"
+#include "chrono_language.h"
 #include "jni_shim.h"
 #include "util.h"
 #include <pthread.h>
@@ -242,8 +243,7 @@ static jint jni_CallIntMethod(void *env, void *obj, void *mid, ...) {
 static jint jni_CallStaticIntMethod(void *env, void *clazz, void *mid, ...) {
   if (mid == &g_method_tags[MID_DPI]) return 160;
   if (mid == &g_method_tags[MID_LOCATION_CODE]) {
-    const char *e = getenv("CHRONO_LOC");
-    int v = e ? atoi(e) : 1;   /* regiao: 0=Japao -> usar !=0 p/ ingles */
+    int v = chrono_location_code();
     if (g_jni_log) debugPrintf("JNI getLocationCode -> %d\n", v);
     return v;
   }

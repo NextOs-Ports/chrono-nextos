@@ -12,8 +12,8 @@
    `<ROMS>` is whatever your firmware uses — `/roms`, `/roms2`,
    `/storage/roms`, `/mnt/mmc/ROMS`, `/mnt/sdcard/ROMS` or
    `/userdata/roms`. On EmuELEC/NextOS the visible `Chrono Trigger.sh` may also
-   live in `ports_scripts/`; the launcher finds the `chrono/` runtime directory
-   and loads `chrono/nxbootstrap.sh` directly either way.
+   live in `ports_scripts/`; the self-contained launcher finds the `chrono/`
+   runtime directory either way.
 
 2. Put the **Chrono Trigger APK you legally own** (arm64 / arm64-v8a) into
    `<ROMS>/ports/chrono/gamedata/`. The file name does not matter: the
@@ -26,6 +26,9 @@
 
 4. Your APK is never deleted. You can remove it after the install if you want
    the space back — keep a copy, it is required to reinstall.
+
+**Language** — edit only `GAME_LANGUAGE="en"` near the top of
+`Chrono Trigger.sh`. Supported values: `en` and `ja`.
 
 **Controls** — native pad, Xbox layout. `A` confirms, `B` cancels, the D-pad
 navigates. **SELECT + START quits** (saving through the game's own pause path).
@@ -48,7 +51,7 @@ possible state — if it happens, that is the bug to report.
    `<ROMS>` é o que o seu firmware usar — `/roms`, `/roms2`, `/storage/roms`,
    `/mnt/mmc/ROMS`, `/mnt/sdcard/ROMS` ou `/userdata/roms`. No EmuELEC/NextOS o
    `Chrono Trigger.sh` visível também pode ficar em `ports_scripts/`; o launcher
-   acha o diretório `chrono/` e carrega `chrono/nxbootstrap.sh` diretamente.
+   autocontido acha o diretório `chrono/` nos dois casos.
 
 2. Coloque o **APK do Chrono Trigger que você possui legalmente** (arm64 /
    arm64-v8a) em `<ROMS>/ports/chrono/gamedata/`. O nome do arquivo não importa:
@@ -62,6 +65,9 @@ possible state — if it happens, that is the bug to report.
 4. O seu APK nunca é apagado. Você pode removê-lo depois da instalação se
    quiser o espaço de volta — guarde uma cópia, ela é necessária para
    reinstalar.
+
+**Idioma** — edite somente `GAME_LANGUAGE="en"` perto do início de
+`Chrono Trigger.sh`. Valores suportados: `en` e `ja`.
 
 **Controles** — controle nativo, padrão Xbox. `A` confirma, `B` cancela, o
 direcional navega. **SELECT + START fecha** (salvando pelo caminho de pausa do

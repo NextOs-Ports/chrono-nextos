@@ -16,8 +16,8 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 PORT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd -P)
 REPO_ROOT=$(cd -- "$PORT_DIR/../.." && pwd -P)
 STATIC_DIR="$SCRIPT_DIR/universal"
-BINARY=${CT_PACKAGE_BINARY:-"$PORT_DIR/chrono-universal"}
-OUTPUT=${1:-"$PORT_DIR/.build/chrono.zip"}
+BINARY=${CT_PACKAGE_BINARY:-"$PORT_DIR/chrono-nextos"}
+OUTPUT=${1:-"$PORT_DIR/.build/Chrono.NextOS-v1.0.6.zip"}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1785628800}
 
 if [[ ${CT_SKIP_BUILD:-0} != 1 ]]; then
@@ -25,8 +25,8 @@ if [[ ${CT_SKIP_BUILD:-0} != 1 ]]; then
 fi
 [[ -f "$BINARY" ]] || fail "runtime universal ausente: $BINARY"
 
-for tool in awk bash dirname file find grep install mkdir mktemp readelf rm \
-            sed sha256sum sort touch unzip zip; do
+for tool in awk bash cmp dirname file find grep install mkdir mktemp python3 \
+            readelf rm sed sha256sum sort touch unzip zip; do
   command -v "$tool" >/dev/null 2>&1 || fail "ferramenta ausente no host: $tool"
 done
 
@@ -43,6 +43,18 @@ TMP_ZIP="$TMP_ROOT/chrono.zip"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT INT TERM
 mkdir -p "$STAGE/chrono"
 
+# The visible launcher is generated from the canonical nxbootstrap 0.6.3
+# template. Packaging fails if either the checked-in launcher or manifest has
+# drifted from that single source of truth.
+GENERATED="$TMP_ROOT/generated"
+PYTHONDONTWRITEBYTECODE=1 python3 -B \
+  "$PORT_DIR/framework/nxbootstrap/tools/generate-port.py" \
+  "$PORT_DIR/nxport.json" --output "$GENERATED"
+cmp -s "$PORT_DIR/Chrono Trigger.sh" "$GENERATED/Chrono Trigger.sh" ||
+  fail "launcher is not the canonical nxbootstrap 0.6.3 output"
+cmp -s "$PORT_DIR/nxport.json" "$GENERATED/chrono/nxport.json" ||
+  fail "nxport.json is not canonical"
+
 put() {
   local mode=$1 source=$2 destination=$3
   [[ -f "$source" ]] || fail "fonte do pacote ausente: $source"
@@ -50,10 +62,10 @@ put() {
 }
 
 put 0755 "$PORT_DIR/Chrono Trigger.sh"        "Chrono Trigger.sh"
-put 0755 "$BINARY"                            "chrono/chrono-universal"
-put 0644 "$PORT_DIR/nxbootstrap.sh"           "chrono/nxbootstrap.sh"
+put 0755 "$BINARY"                            "chrono/chrono-nextos"
 put 0644 "$PORT_DIR/nxport.json"              "chrono/nxport.json"
 put 0644 "$PORT_DIR/README.md"                "chrono/README.md"
+put 0644 "$PORT_DIR/CHANGELOG.md"             "chrono/CHANGELOG.md"
 put 0644 "$PORT_DIR/NOTICE.md"                "chrono/NOTICE.md"
 put 0644 "$PORT_DIR/INSTALLATION.md"          "chrono/INSTALLATION.md"
 if [[ -f "$PORT_DIR/LICENSE" ]]; then
@@ -126,7 +138,7 @@ while IFS= read -r -d '' candidate; do
     *ELF*)
       relative=${candidate#"$STAGE/"}
       case "$relative" in
-        chrono/chrono-universal|chrono/nxextract/nxextract-ui) ;;
+        chrono/chrono-nextos|chrono/nxextract/nxextract-ui) ;;
         *) fail "ELF inesperado entrou no pacote: $relative" ;;
       esac
       glibc_at_most "$candidate" 30
@@ -137,7 +149,7 @@ while IFS= read -r -d '' candidate; do
   esac
 done < <(find "$STAGE" -type f -print0)
 
-PAD_LAYOUT=$(readelf -sW "$STAGE/chrono/chrono-universal" |
+PAD_LAYOUT=$(readelf -sW "$STAGE/chrono/chrono-nextos" |
   awk '$4 == "TLS" && $8 == "g_bionic_guard_pad" {
     value=$2 ":" $3
   } END { print value }')
@@ -146,7 +158,7 @@ PAD_LAYOUT=$(readelf -sW "$STAGE/chrono/chrono-universal" |
 
 # Bits +x esperados: nenhuma etapa critica depende deles, mas o zip precisa
 # entregar o conjunto certo (a lista nao pode encolher junto com refactor).
-for expected in "Chrono Trigger.sh" chrono/chrono-universal \
+for expected in "Chrono Trigger.sh" chrono/chrono-nextos \
                 chrono/nxextract/nxextract.py \
                 chrono/nxextract/nxextract-ui \
                 chrono/nxextract/nxextract-runtime-env.sh \
@@ -155,12 +167,15 @@ for expected in "Chrono Trigger.sh" chrono/chrono-universal \
 done
 
 bash -n "$STAGE/Chrono Trigger.sh"
-bash -n "$STAGE/chrono/nxbootstrap.sh"
 bash -n "$STAGE/chrono/nxextract/nxextract-runtime-env.sh"
 bash -n "$STAGE/chrono/nxextract/run-extractor.sh"
 if grep -En '^[[:space:]]*(export[[:space:]]+)?SDL_(VIDEO|AUDIO)DRIVER=' \
     "$STAGE/Chrono Trigger.sh"; then
   fail "o launcher nao pode fixar backend SDL de video ou audio"
+fi
+if find "$STAGE" \( -name 'nxbootstrap.sh' -o -name 'run.sh' -o \
+    -name 'chrono-universal' \) -print -quit | grep -q .; then
+  fail "legacy launcher layer or executable name entered the package"
 fi
 if grep -En \
     '(^|[[:space:]])(setsid|nohup|systemctl[[:space:]]+(stop|mask|restart)|pkill)([[:space:]]|$)' \

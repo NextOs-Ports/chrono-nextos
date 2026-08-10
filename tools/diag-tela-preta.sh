@@ -10,7 +10,7 @@
 # pixel nao-preto e a tela estiver preta, o defeito e' de APRESENTACAO
 # (backend de video / swap), nao de render.
 #
-# O binario publico 1.0.2 ja traz tudo isto atras de variavel de ambiente:
+# O binario publico traz tudo isto atras de variavel de ambiente:
 # nao e' preciso build nova nem trocar arquivo do pacote.
 #
 # Uso, no aparelho, pelo shell:
@@ -38,11 +38,11 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 # O jogo tem trava de instancia unica no proprio binario: uma copia esquecida
 # viva faz a rodada seguinte morrer sem explicar. Derrubar e CONFERIR.
 echo "== derrubando qualquer copia viva do jogo =="
-pkill -f "$GAMEDIR/chrono-universal" 2>/dev/null
+pkill -f "$GAMEDIR/chrono-nextos" 2>/dev/null
 sleep 2
-pkill -9 -f "$GAMEDIR/chrono-universal" 2>/dev/null
+pkill -9 -f "$GAMEDIR/chrono-nextos" 2>/dev/null
 sleep 2
-if pgrep -f "$GAMEDIR/chrono-universal" >/dev/null 2>&1; then
+if pgrep -f "$GAMEDIR/chrono-nextos" >/dev/null 2>&1; then
   echo "ERRO: ainda ha copia do jogo viva; nao da para medir. Reinicie o aparelho." >&2
   exit 1
 fi
@@ -76,7 +76,7 @@ echo
 env $EXTRA_ENV \
     CHRONO_SHOTEVERY=120 CHRONO_SHOTMAX=40 \
     CHRONO_FPSLOG=1 \
-    bash "$GAMEDIR/run.sh"
+    bash "$GAMEDIR/../Chrono Trigger.sh"
 
 echo
 echo "== o que o jogo DESENHOU em cada captura =="

@@ -1,13 +1,17 @@
 {
   "architecture": "aarch64",
   "argument_mode": "game-dir-and-passthrough",
-  "enabled_quirks": [
-    "game.chrono.present-alpha-one",
-    "game.chrono.present-finish"
-  ],
-  "executable": "chrono-universal",
+  "enabled_quirks": [],
+  "executable": "chrono-nextos",
   "home_mode": "port",
   "id": "chrono",
+  "language": {
+    "default": "en",
+    "supported": [
+      "en",
+      "ja"
+    ]
+  },
   "launcher_name": "Chrono Trigger.sh",
   "nxextract": {
     "mode": "yes",
@@ -26,7 +30,7 @@
     "input.controller-api"
   ],
   "required_files": [
-    "chrono-universal",
+    "chrono-nextos",
     "libchrono.so",
     "libc++_shared.so",
     "assets/resources.bin",

@@ -13,7 +13,7 @@
 set -euo pipefail
 
 PORT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-OUTPUT=${CT_UNIVERSAL_OUTPUT:-chrono-universal}
+OUTPUT=${CT_UNIVERSAL_OUTPUT:-chrono-nextos}
 BUILDER_IMAGE=playfetch-builder:buster
 BUILDER_IMAGE_ID=sha256:036c7910ea53bc78cc213452afa92fa83d55de1c51ae54f315af58b5a41a45cf
 export LC_ALL=C

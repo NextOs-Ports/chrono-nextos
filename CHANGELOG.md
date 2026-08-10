@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.6
+
+- Replaced the historical two-layer launcher with the canonical,
+  self-contained `nxbootstrap 0.6.3` output. Its instance lock uses portable
+  BusyBox `stat -t` plus Bash `-ef`, matching the fix physically confirmed on
+  AmberELEC; no runtime `nxbootstrap.sh` is packaged.
+- Renamed the public Linux executable to `chrono-nextos` and retained the
+  public `GLIBC_2.30` ceiling.
+- Added the visible `GAME_LANGUAGE="en"` selector. Supported values are the
+  two modes proven in the Android binary, `en` and `ja`; the adapter converts
+  `NXPORT_LANGUAGE` to the original location/region codes.
+- Kept the original Android lifecycle, callbacks, graphics, audio and input
+  flow unchanged.
+
 ## 1.0.5
 
 Packaging-contract correction: the public ZIP now has one visible PortMaster
