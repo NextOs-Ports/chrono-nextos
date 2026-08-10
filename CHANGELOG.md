@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.7
+
+- Regenerated the canonical `nxbootstrap 0.6.3` launcher so its instance lock
+  no longer calls the external `stat` command, which is absent from some muOS
+  images. It now reads the hardlink count through portable `ls` output and
+  retains the Bash `-ef`, owner, regular-file, symlink and `flock` checks.
+- Added release gates that reject any future generated launcher which brings
+  the external `stat` dependency back.
+- Preserved the approved `chrono-nextos` game executable byte-for-byte; this
+  release changes only launcher/package metadata and documentation.
+
 ## 1.0.6
 
 - Replaced the historical two-layer launcher with the canonical,

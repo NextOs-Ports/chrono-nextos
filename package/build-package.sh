@@ -17,7 +17,7 @@ PORT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd -P)
 REPO_ROOT=$(cd -- "$PORT_DIR/../.." && pwd -P)
 STATIC_DIR="$SCRIPT_DIR/universal"
 BINARY=${CT_PACKAGE_BINARY:-"$PORT_DIR/chrono-nextos"}
-OUTPUT=${1:-"$PORT_DIR/.build/Chrono.NextOS-v1.0.6.zip"}
+OUTPUT=${1:-"$PORT_DIR/.build/Chrono.NextOS-v1.0.7.zip"}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1785628800}
 
 if [[ ${CT_SKIP_BUILD:-0} != 1 ]]; then
@@ -169,6 +169,11 @@ done
 bash -n "$STAGE/Chrono Trigger.sh"
 bash -n "$STAGE/chrono/nxextract/nxextract-runtime-env.sh"
 bash -n "$STAGE/chrono/nxextract/run-extractor.sh"
+grep -Fq 'command ls -Lldn /proc/self/fd/9' "$STAGE/Chrono Trigger.sh" ||
+  fail "o launcher nao contem o lock portavel sem stat"
+if grep -Eq 'stat[[:space:]]+-' "$STAGE/Chrono Trigger.sh"; then
+  fail "o launcher voltou a depender do comando externo stat"
+fi
 if grep -En '^[[:space:]]*(export[[:space:]]+)?SDL_(VIDEO|AUDIO)DRIVER=' \
     "$STAGE/Chrono Trigger.sh"; then
   fail "o launcher nao pode fixar backend SDL de video ou audio"

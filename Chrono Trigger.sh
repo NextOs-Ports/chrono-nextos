@@ -175,10 +175,12 @@ if ! { exec 9>>"$NXBOOTSTRAP_LOCK_FILE"; } 2>/dev/null; then
   exit 1
 fi
 umask "$NXBOOTSTRAP_OLD_UMASK"
-NXBOOTSTRAP_LOCK_STAT=()
-IFS=' ' read -r -a NXBOOTSTRAP_LOCK_STAT \
-  <<< "$(LC_ALL=C stat -L -t /proc/self/fd/9 2>/dev/null)"
-NXBOOTSTRAP_LOCK_LINKS=${NXBOOTSTRAP_LOCK_STAT[8]:-}
+# POSIX/BusyBox/Toybox ls supplies nlink; Bash -ef proves the opened inode.
+# Never depend on external stat: some supported muOS images omit it.
+NXBOOTSTRAP_LOCK_META=()
+IFS=' ' read -r -a NXBOOTSTRAP_LOCK_META \
+  <<< "$(LC_ALL=C command ls -Lldn /proc/self/fd/9 2>/dev/null)"
+NXBOOTSTRAP_LOCK_LINKS=${NXBOOTSTRAP_LOCK_META[1]:-}
 if [ ! -f "$NXBOOTSTRAP_LOCK_FILE" ] || [ -L "$NXBOOTSTRAP_LOCK_FILE" ] || \
    [ ! -O "$NXBOOTSTRAP_LOCK_FILE" ] || [ "$NXBOOTSTRAP_LOCK_LINKS" != 1 ] || \
    ! [ "$NXBOOTSTRAP_LOCK_FILE" -ef /proc/self/fd/9 ]; then
@@ -187,9 +189,7 @@ if [ ! -f "$NXBOOTSTRAP_LOCK_FILE" ] || [ -L "$NXBOOTSTRAP_LOCK_FILE" ] || \
   nxbootstrap_finish
   exit 1
 fi
-# NXRelease 0.2.5 compatibility only; identity uses -ef, never GNU stat -c.
-unset NXBOOTSTRAP_LOCK_STAT NXBOOTSTRAP_LOCK_LINKS \
-  NXBOOTSTRAP_LOCK_PATH_ID NXBOOTSTRAP_LOCK_FD_ID
+unset NXBOOTSTRAP_LOCK_META NXBOOTSTRAP_LOCK_LINKS
 if ! flock -n 9; then
   echo "another instance holds the lock; not double-launching"
   nxbootstrap_finish

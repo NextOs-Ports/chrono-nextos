@@ -1,4 +1,4 @@
-# Chrono Trigger 1.0.6 — nxbootstrap 0.6.3
+# Chrono Trigger 1.0.7 — nxbootstrap 0.6.3
 
 A native Linux port of the Android release of **Chrono Trigger** (Cocos2d-x
 3.14.1, GLES2) for retro handhelds. The port is a **compatibility loader**: it
@@ -8,6 +8,8 @@ replaces the Android runtime they expect (JNI, OpenSL ES, asset manager,
 firmware's own SDL2/EGL/GLES2.
 
 This release uses the canonical self-contained `nxbootstrap 0.6.3` launcher.
+Its instance lock works without the external `stat` command used by older
+launchers, while retaining owner, regular-file, hardlink and inode checks.
 `nxbootstrap` owns the bounded process lifecycle, `nxcompat`
 measures capabilities, `nxloader` maps the Android ELFs, `nxgl` opens and
 reports the real GLES2 drawable, `nxinput` owns controller discovery/hotplug,
@@ -149,7 +151,9 @@ manager, o texto do `Cocos2dxBitmap`) e conduz o loop de render do Cocos2d-x
 sobre o SDL2/EGL/GLES2 do próprio firmware.
 
 Esta release usa o launcher autocontido canônico do `nxbootstrap 0.6.3`. O
-`nxbootstrap` controla o ciclo de processo, o `nxcompat` mede as
+lock de instância funciona sem o comando externo `stat` usado pelos launchers
+anteriores, preservando as verificações de dono, arquivo regular, hardlinks e
+identidade do inode. O `nxbootstrap` controla o ciclo de processo, o `nxcompat` mede as
 capacidades, o `nxloader` mapeia os ELFs Android, o `nxgl` abre e registra o
 drawable GLES2 real, o `nxinput` cuida da descoberta/hotplug dos controles e o
 `nxaudio` registra a saída SDL aberta pela ponte OpenSL ES do jogo. JNI, assets,
