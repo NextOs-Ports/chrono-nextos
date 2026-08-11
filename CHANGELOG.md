@@ -53,8 +53,9 @@ accepted on both supported stacks. The downloadable ZIP is byte-for-byte the
 same package internally identified as 1.0.3; it was deliberately not rebuilt
 after physical acceptance.
 
-- The public repository now carries the framework sources used by the port:
-  `nxloader`, `nxcompat`, `nxgl`, `nxinput` and `nxaudio`.
+- The public repository now carries the runtime sources compiled into the
+  port binary, vendored under `vendor/`: `nxloader`, `nxcompat`, `nxgl`,
+  `nxinput` and `nxaudio`.
 - The same ZIP was accepted on a NextOS Mali-450 stack with fbdev/PulseAudio
   and on an ArkOS RK3326 stack with KMSDRM/ALSA. Video, audio, native controls,
   the SELECT+START shutdown path and clean return were verified.

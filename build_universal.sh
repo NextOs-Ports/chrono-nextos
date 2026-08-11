@@ -21,7 +21,6 @@ export TZ=UTC
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1785628800}
 
 if [ "${CT_BUSTER_IN_CONTAINER:-0}" != "1" ]; then
-  REPOSITORY_ROOT=$(git -C "$PORT_DIR" rev-parse --show-toplevel)
   NEXTOS_ROOT=${NEXTOS_ROOT:-"$HOME/NextOS-Elite-Edition"}
   NEXTOS_TOOLCHAIN=$(
     find -H "$NEXTOS_ROOT" -maxdepth 2 -type d \
@@ -50,7 +49,6 @@ if [ "${CT_BUSTER_IN_CONTAINER:-0}" != "1" ]; then
     -e CT_HOST_GID="$(id -g)" \
     -e LC_ALL=C -e TZ=UTC -e SOURCE_DATE_EPOCH="$SOURCE_DATE_EPOCH" \
     -v "$PORT_DIR":/repo \
-    -v "$REPOSITORY_ROOT/framework":/framework:ro \
     -v "$NEXTOS_SYSROOT":/nxsr:ro \
     "$BUILDER_IMAGE_ID" \
     bash /repo/build_universal.sh
@@ -67,7 +65,7 @@ done
 CC=aarch64-linux-gnu-gcc
 NM=aarch64-linux-gnu-nm
 READELF=aarch64-linux-gnu-readelf
-FRAMEWORK_ROOT=${CT_FRAMEWORK_ROOT:-/framework}
+FRAMEWORK_ROOT=${CT_FRAMEWORK_ROOT:-/repo/vendor}
 cd /repo
 
 OBJDIR=$(mktemp -d)

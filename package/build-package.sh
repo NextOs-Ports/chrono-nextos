@@ -44,16 +44,21 @@ trap 'rm -rf -- "$TMP_ROOT"' EXIT INT TERM
 mkdir -p "$STAGE/chrono"
 
 # The visible launcher is generated from the canonical nxbootstrap 0.6.3
-# template. Packaging fails if either the checked-in launcher or manifest has
-# drifted from that single source of truth.
-GENERATED="$TMP_ROOT/generated"
-PYTHONDONTWRITEBYTECODE=1 python3 -B \
-  "$PORT_DIR/framework/nxbootstrap/tools/generate-port.py" \
-  "$PORT_DIR/nxport.json" --output "$GENERATED"
-cmp -s "$PORT_DIR/Chrono Trigger.sh" "$GENERATED/Chrono Trigger.sh" ||
-  fail "launcher is not the canonical nxbootstrap 0.6.3 output"
-cmp -s "$PORT_DIR/nxport.json" "$GENERATED/chrono/nxport.json" ||
-  fail "nxport.json is not canonical"
+# template by internal NextOS tooling that is not distributed. Where
+# NX_GENERATOR points at a checkout, packaging still fails if the checked-in
+# launcher or manifest drifted from that single source of truth.
+GENERATOR=${NX_GENERATOR:-$PORT_DIR/framework/nxbootstrap/tools/generate-port.py}
+if [[ -f $GENERATOR ]]; then
+  GENERATED="$TMP_ROOT/generated"
+  PYTHONDONTWRITEBYTECODE=1 python3 -B "$GENERATOR" \
+    "$PORT_DIR/nxport.json" --output "$GENERATED"
+  cmp -s "$PORT_DIR/Chrono Trigger.sh" "$GENERATED/Chrono Trigger.sh" ||
+    fail "launcher is not the canonical nxbootstrap 0.6.3 output"
+  cmp -s "$PORT_DIR/nxport.json" "$GENERATED/chrono/nxport.json" ||
+    fail "nxport.json is not canonical"
+else
+  echo "NX_GENERATOR not set; packaging the checked-in launcher as-is"
+fi
 
 put() {
   local mode=$1 source=$2 destination=$3
