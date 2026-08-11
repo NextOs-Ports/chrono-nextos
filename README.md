@@ -21,6 +21,19 @@ adapter; the common framework never invents them.
 legally own; the bundled installer (NXExtract) extracts, validates and
 publishes it on the device.
 
+## Screenshots
+
+Captured straight off a real handheld running this port — real hardware, no
+upscaling or mock-ups:
+
+| | |
+|---|---|
+| ![Title](screenshots/01-title.png) | ![Menu](screenshots/02-menu.png) |
+| ![Gameplay](screenshots/03-gameplay.png) | ![Crono's house](screenshots/04-crono-house.png) |
+| ![In-game menu](screenshots/05-ingame-menu.png) | |
+
+---
+
 ## Community
 
 Questions, device reports and bug reports: <https://discord.gg/DHfY62eDNN>
