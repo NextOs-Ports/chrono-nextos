@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.8
+
+- Published the muOS installer correction under a new version instead of
+  replacing or ambiguously reusing the existing 1.0.7 package number.
+- Reproduced the failure against the official RG40XX-H muOS
+  2601.1/Funky Jacaranda root filesystem: the older launcher exits before it
+  can create its normal log because that image has no external `stat`
+  command. The packaged launcher keeps the stat-free `ls` plus Bash `-ef`
+  lock validation introduced in 1.0.7.
+- Updated to canonical `nxbootstrap 0.6.6`. Any non-zero exit after Bash enters
+  the launcher but before `log.txt` opens now leaves an owner-only,
+  per-process `chrono-launcher-error.<pid>.log`, closing the silent-return
+  diagnostic gap without claiming to cover interpreter or parse failures.
+- Installed the release ZIP with the official PortMaster code from that muOS
+  image, reopened PortMaster successfully with its generated version-4
+  `port.json`, and launched the installed entry through to NXExtract. The game
+  executable remains byte-for-byte unchanged.
+
 ## 1.0.7
 
 - Regenerated the canonical `nxbootstrap 0.6.3` launcher so its instance lock

@@ -1,4 +1,4 @@
-# Chrono Trigger 1.0.7 — nxbootstrap 0.6.3
+# Chrono Trigger 1.0.8 — nxbootstrap 0.6.6
 
 A native Linux port of the Android release of **Chrono Trigger** (Cocos2d-x
 3.14.1, GLES2) for retro handhelds. The port is a **compatibility loader**: it
@@ -7,7 +7,7 @@ replaces the Android runtime they expect (JNI, OpenSL ES, asset manager,
 `Cocos2dxBitmap` text rendering) and drives the Cocos2d-x render loop on the
 firmware's own SDL2/EGL/GLES2.
 
-This release uses the canonical self-contained `nxbootstrap 0.6.3` launcher.
+This release uses the canonical self-contained `nxbootstrap 0.6.6` launcher.
 Its instance lock works without the external `stat` command used by older
 launchers, while retaining owner, regular-file, hardlink and inode checks.
 `nxbootstrap` owns the bounded process lifecycle, `nxcompat`
@@ -139,7 +139,7 @@ from the target firmware at runtime.
 - `src/opensles_shim.c` — game-owned OpenSL ES to SDL audio adapter;
 - `src/imports.c` — explicit Bionic/Android import contracts;
 - `Chrono Trigger.sh` and `nxport.json` — generated self-contained
-  `nxbootstrap 0.6.3` launcher and declarative contract;
+  `nxbootstrap 0.6.6` launcher and declarative contract;
 - `nxextract/` and `extractor.json` — pinned BYO-data extraction flow.
 
 ## Credits and licenses
@@ -163,7 +163,7 @@ Linux, substitui o runtime Android que elas esperam (JNI, OpenSL ES, asset
 manager, o texto do `Cocos2dxBitmap`) e conduz o loop de render do Cocos2d-x
 sobre o SDL2/EGL/GLES2 do próprio firmware.
 
-Esta release usa o launcher autocontido canônico do `nxbootstrap 0.6.3`. O
+Esta release usa o launcher autocontido canônico do `nxbootstrap 0.6.6`. O
 lock de instância funciona sem o comando externo `stat` usado pelos launchers
 anteriores, preservando as verificações de dono, arquivo regular, hardlinks e
 identidade do inode. O `nxbootstrap` controla o ciclo de processo, o `nxcompat` mede as
@@ -282,5 +282,5 @@ são distribuídos aqui. Veja [NOTICE.md](NOTICE.md).
 - `src/opensles_shim.c` — adapter OpenSL ES para áudio SDL;
 - `src/imports.c` — contratos explícitos de imports Bionic/Android;
 - `Chrono Trigger.sh` e `nxport.json` — launcher autocontido gerado pelo
-  `nxbootstrap 0.6.3` e contrato declarativo;
+  `nxbootstrap 0.6.6` e contrato declarativo;
 - `nxextract/` e `extractor.json` — extração BYO-data fixada por hash.

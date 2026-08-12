@@ -17,7 +17,7 @@ PORT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd -P)
 REPO_ROOT=$(cd -- "$PORT_DIR/../.." && pwd -P)
 STATIC_DIR="$SCRIPT_DIR/universal"
 BINARY=${CT_PACKAGE_BINARY:-"$PORT_DIR/chrono-nextos"}
-OUTPUT=${1:-"$PORT_DIR/.build/Chrono.NextOS-v1.0.7.zip"}
+OUTPUT=${1:-"$PORT_DIR/.build/Chrono.NextOS-v1.0.8.zip"}
 SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1785628800}
 
 if [[ ${CT_SKIP_BUILD:-0} != 1 ]]; then
@@ -43,7 +43,7 @@ TMP_ZIP="$TMP_ROOT/chrono.zip"
 trap 'rm -rf -- "$TMP_ROOT"' EXIT INT TERM
 mkdir -p "$STAGE/chrono"
 
-# The visible launcher is generated from the canonical nxbootstrap 0.6.3
+# The visible launcher is generated from the canonical nxbootstrap 0.6.6
 # template by internal NextOS tooling that is not distributed. Where
 # NX_GENERATOR points at a checkout, packaging still fails if the checked-in
 # launcher or manifest drifted from that single source of truth.
@@ -53,7 +53,7 @@ if [[ -f $GENERATOR ]]; then
   PYTHONDONTWRITEBYTECODE=1 python3 -B "$GENERATOR" \
     "$PORT_DIR/nxport.json" --output "$GENERATED"
   cmp -s "$PORT_DIR/Chrono Trigger.sh" "$GENERATED/Chrono Trigger.sh" ||
-    fail "launcher is not the canonical nxbootstrap 0.6.3 output"
+    fail "launcher is not the canonical nxbootstrap 0.6.6 output"
   cmp -s "$PORT_DIR/nxport.json" "$GENERATED/chrono/nxport.json" ||
     fail "nxport.json is not canonical"
 else
@@ -176,9 +176,17 @@ bash -n "$STAGE/chrono/nxextract/nxextract-runtime-env.sh"
 bash -n "$STAGE/chrono/nxextract/run-extractor.sh"
 grep -Fq 'command ls -Lldn /proc/self/fd/9' "$STAGE/Chrono Trigger.sh" ||
   fail "o launcher nao contem o lock portavel sem stat"
-if grep -Eq 'stat[[:space:]]+-' "$STAGE/Chrono Trigger.sh"; then
-  fail "o launcher voltou a depender do comando externo stat"
-fi
+grep -Fq 'chrono-launcher-error.$$.log' "$STAGE/Chrono Trigger.sh" ||
+  fail "o launcher nao gera diagnostico antes do log principal"
+grep -Fq 'NXBOOTSTRAP_EARLY_LOG_ACTIVE=1' "$STAGE/Chrono Trigger.sh" ||
+  fail "o trap de diagnostico precoce nao esta ativo"
+while IFS= read -r -d '' shell_path; do
+  if grep -En \
+      '(^|[;&|({[:space:]])(command[[:space:]]+)?stat([[:space:]]|$)' \
+      "$shell_path" | grep -Ev ':[[:space:]]*#'; then
+    fail "um caminho shell do pacote voltou a depender do comando externo stat: ${shell_path#"$STAGE/"}"
+  fi
+done < <(find "$STAGE" -type f -name '*.sh' -print0)
 if grep -En '^[[:space:]]*(export[[:space:]]+)?SDL_(VIDEO|AUDIO)DRIVER=' \
     "$STAGE/Chrono Trigger.sh"; then
   fail "o launcher nao pode fixar backend SDL de video ou audio"

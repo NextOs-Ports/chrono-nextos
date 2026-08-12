@@ -34,10 +34,11 @@
 navigates. **SELECT + START quits** (saving through the game's own pause path).
 
 **Troubleshooting** — everything is logged next to the port:
-`chrono/debug.log` (runtime) and `chrono/nxextract.log` (data installer).
-If the launcher itself cannot start, it writes `chrono-launcher-error.<pid>.log`
-beside the visible script. "Nothing happened and there is no log" is not a
-possible state — if it happens, that is the bug to report.
+`chrono/log.txt` (runtime) and `chrono/nxextract.log` (data installer). If Bash
+enters the launcher but it fails before `log.txt` opens, it writes an owner-only
+`chrono-launcher-error.<pid>.log`: first in the resolved game directory, then
+beside the visible script, and finally in `/tmp`. No new log means the early
+trap was not proven or every destination was unwritable; report that boundary.
 
 ## Português
 
@@ -73,8 +74,10 @@ possible state — if it happens, that is the bug to report.
 direcional navega. **SELECT + START fecha** (salvando pelo caminho de pausa do
 próprio jogo).
 
-**Se der errado** — tudo fica registrado ao lado do port: `chrono/debug.log`
-(runtime) e `chrono/nxextract.log` (instalador de dados). Se nem o launcher
-subir, ele grava `chrono-launcher-error.<pid>.log` ao lado do script visível.
-"Não aconteceu nada e não tem log" não é um estado possível — se acontecer, é
-esse o bug a relatar.
+**Se der errado** — tudo fica registrado ao lado do port: `chrono/log.txt`
+(runtime) e `chrono/nxextract.log` (instalador de dados). Se o Bash entrar no
+launcher mas ele falhar antes de abrir `log.txt`, será criado um
+`chrono-launcher-error.<pid>.log` privado: primeiro no diretório resolvido do
+jogo, depois ao lado do script visível e por fim em `/tmp`. Nenhum log novo
+significa trap precoce não comprovado ou todos os destinos sem escrita; relate
+essa fronteira.
