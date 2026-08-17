@@ -153,7 +153,7 @@
     {
       "kind": "payload",
       "mode": "0644",
-      "sha256": "326dd5d8641f399990de42def50ac29eb4c9222601c0a0a3fc3c947dd3bec65d",
+      "sha256": "2df2bd7011e87351e2e3e296ddb7f2520270a76160f95b2d64b337167294f28c",
       "source": "version.txt",
       "target": "chrono/version.txt"
     },
@@ -163,6 +163,27 @@
       "sha256": "b720fde3eb4c18c0152df69c1463716ab11301df1065dd8720fba1daefa3fe56",
       "source": "FRAMEWORK-PIN.json",
       "target": "chrono/FRAMEWORK-PIN.json"
+    },
+    {
+      "kind": "payload",
+      "mode": "0755",
+      "sha256": "92f283686d1545d140f1e185d05522f9c3596f87ad958ec37721167ce2302537",
+      "source": "tools/diag-tela-preta.sh",
+      "target": "chrono/tools/diag-tela-preta.sh"
+    },
+    {
+      "kind": "payload",
+      "mode": "0755",
+      "sha256": "351cc58079452710f47b8ec88d3df8b0b72529ad691cffae37c976db0fd24c3f",
+      "source": "tools/shot2png.py",
+      "target": "chrono/tools/shot2png.py"
+    },
+    {
+      "kind": "payload",
+      "mode": "0755",
+      "sha256": "4d3495fb8a5a15d5d9cafb84e995ef029cd4fed7b8f1d0fc277155e327011920",
+      "source": "tools/virtual-pad.py",
+      "target": "chrono/tools/virtual-pad.py"
     },
     {
       "kind": "payload",
@@ -262,7 +283,7 @@
     },
     "port_dir": "chrono",
     "profile": "universal-portmaster",
-    "version": "1.0.8"
+    "version": "1.0.9"
   },
   "portmaster_metadata": {
     "gameinfo_xml": {
