@@ -604,11 +604,17 @@ int main(int argc, char *argv[]) {
      grava o estado no onPause), fecha audio/video e retorna ao frontend. */
   debugPrintf("Exiting (%s)... VmHWM=%ld kB\n", ct_exit_reason(), ct_peak_rss_kb());
   ct_start_shutdown_watchdog(8);
+  /* Save first: cocos writes its state in onPause. */
   if (nativeOnPause) nativeOnPause(g_env, NULL);
   ct_exit_chord_close();
-  ct_framework_close_input(framework);
-  ct_framework_close_graphics(framework);
-  SDL_Quit();
   ct_single_instance_unlock();
-  return 0;
+  /* The SIGSEGV only ever appeared AFTER this point, in the Mali/SDL teardown
+   * (SDL_GL_DeleteContext / SDL_DestroyWindow / SDL_Quit on the Utgard driver),
+   * never during the game. The save is already on disk, so tearing the GL/SDL
+   * stack down politely buys nothing and only risks a crashy exit. Leave it to
+   * the kernel: flush the logs and _exit(0) with a clean status. */
+  fflush(stdout);
+  fflush(stderr);
+  debugPrintf("SHUTDOWN: save done; skipping GL/SDL teardown, _exit(0)\n");
+  _exit(0);
 }
