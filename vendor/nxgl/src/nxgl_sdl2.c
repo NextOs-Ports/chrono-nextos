@@ -172,6 +172,25 @@ static int nxgl_hint_matches(const char *name, int existed,
   return current && snapshot && strcmp(current, snapshot) == 0;
 }
 
+/* SDL_ResetHint entered SDL 2.24; resolve it optionally so linking nxgl keeps
+ * the SDL 2.0.4 floor. On an older SDL the reset is simply skipped. */
+#ifndef NXGL_TEST_HOOKS
+#include <dlfcn.h>
+static void nxgl_reset_hint_compat(const char *name) {
+  typedef void (*reset_fn)(const char *);
+  reset_fn fn = NULL;
+  void *sym;
+  (void)dlerror();
+  sym = dlsym(RTLD_DEFAULT, "SDL_ResetHint");
+  if (sym && sizeof(fn) == sizeof(sym)) {
+    memcpy(&fn, &sym, sizeof(fn));
+    fn(name);
+  }
+}
+#else
+static void nxgl_reset_hint_compat(const char *name) { SDL_ResetHint(name); }
+#endif
+
 static int nxgl_restore_hint(const char *name, int existed,
                              const char *snapshot) {
   int failed = 0;
@@ -179,7 +198,7 @@ static int nxgl_restore_hint(const char *name, int existed,
     if (!snapshot || SDL_SetHint(name, snapshot) != SDL_TRUE)
       failed = 1;
   } else {
-    SDL_ResetHint(name);
+    nxgl_reset_hint_compat(name);
   }
   if (!nxgl_hint_matches(name, existed, snapshot))
     failed = 1;

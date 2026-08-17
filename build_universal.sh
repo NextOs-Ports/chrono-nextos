@@ -165,8 +165,7 @@ stub_lib GLESv2  libGLESv2.so.2   '^(gl|egl)[A-Z]'
 stub_lib freetype libfreetype.so.6 '^FT_'
 
 "$CC" -fPIE -pie -rdynamic -o "$OUTPUT" "${OBJS[@]}" \
-  -L"$STUBDIR" -lSDL2 -lGLESv2 -lfreetype -ldl -lm -lpthread -lgcc_s \
-  -Wl,-rpath,'$ORIGIN'
+  -L"$STUBDIR" -lSDL2 -lGLESv2 -lfreetype -ldl -lm -lpthread -lgcc_s
 
 # ---- trava de portabilidade: GLIBC <= 2.30 ----
 MAX_GLIBC=$(

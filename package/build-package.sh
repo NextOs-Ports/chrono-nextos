@@ -1,266 +1,85 @@
 #!/usr/bin/env bash
-# Monta e AUDITA o pacote publico universal BYO-data do Chrono Trigger.
-# Molde estrutural: ports/hitmango/package/build-package.sh (port aprovado).
+# Build, gate and bundle the public danman BYO-data release.
+#
+# Generated from framework/nxrelease/templates/build-package.sh.in. This is
+# the one shape every port packages through, so nx-ship-port can build,
+# verify, install and prove a port in one run without learning per-port
+# spellings. Nothing here is typed by hand: the loader is rebuilt from source,
+# the manifest is rendered from the tree, and the release tool gates the zip.
 set -euo pipefail
 
 export LC_ALL=C
 export TZ=UTC
-umask 022
+export PYTHONDONTWRITEBYTECODE=1
+umask 077
 
-fail() {
-  printf 'package error: %s\n' "$*" >&2
-  exit 1
-}
-
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
-PORT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd -P)
-REPO_ROOT=$(cd -- "$PORT_DIR/../.." && pwd -P)
-STATIC_DIR="$SCRIPT_DIR/universal"
-BINARY=${CT_PACKAGE_BINARY:-"$PORT_DIR/chrono-nextos"}
-OUTPUT=${1:-"$PORT_DIR/.build/Chrono.NextOS-v1.0.8.zip"}
-SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1785628800}
-
-if [[ ${CT_SKIP_BUILD:-0} != 1 ]]; then
-  "$PORT_DIR/build_universal.sh"
-fi
-[[ -f "$BINARY" ]] || fail "runtime universal ausente: $BINARY"
-
-for tool in awk bash cmp dirname file find grep install mkdir mktemp python3 \
-            readelf rm sed sha256sum sort touch unzip zip; do
-  command -v "$tool" >/dev/null 2>&1 || fail "ferramenta ausente no host: $tool"
-done
-
-case "$SOURCE_DATE_EPOCH" in
-  ''|*[!0-9]*) fail "SOURCE_DATE_EPOCH precisa ser um timestamp Unix" ;;
-esac
-(( SOURCE_DATE_EPOCH >= 315532800 )) || fail "SOURCE_DATE_EPOCH antes do ZIP"
-(( SOURCE_DATE_EPOCH <= 4354819198 )) || fail "SOURCE_DATE_EPOCH depois do ZIP"
-(( SOURCE_DATE_EPOCH % 2 == 0 )) || fail "SOURCE_DATE_EPOCH precisa ser par"
-
-TMP_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/chrono-package.XXXXXX")
-STAGE="$TMP_ROOT/stage"
-TMP_ZIP="$TMP_ROOT/chrono.zip"
-trap 'rm -rf -- "$TMP_ROOT"' EXIT INT TERM
-mkdir -p "$STAGE/chrono"
-
-# The visible launcher is generated from the canonical nxbootstrap 0.6.6
-# template by internal NextOS tooling that is not distributed. Where
-# NX_GENERATOR points at a checkout, packaging still fails if the checked-in
-# launcher or manifest drifted from that single source of truth.
-GENERATOR=${NX_GENERATOR:-$PORT_DIR/framework/nxbootstrap/tools/generate-port.py}
-if [[ -f $GENERATOR ]]; then
-  GENERATED="$TMP_ROOT/generated"
-  PYTHONDONTWRITEBYTECODE=1 python3 -B "$GENERATOR" \
-    "$PORT_DIR/nxport.json" --output "$GENERATED"
-  cmp -s "$PORT_DIR/Chrono Trigger.sh" "$GENERATED/Chrono Trigger.sh" ||
-    fail "launcher is not the canonical nxbootstrap 0.6.6 output"
-  cmp -s "$PORT_DIR/nxport.json" "$GENERATED/chrono/nxport.json" ||
-    fail "nxport.json is not canonical"
-else
-  echo "NX_GENERATOR not set; packaging the checked-in launcher as-is"
-fi
-
-put() {
-  local mode=$1 source=$2 destination=$3
-  [[ -f "$source" ]] || fail "fonte do pacote ausente: $source"
-  install -D -m "$mode" -- "$source" "$STAGE/$destination"
-}
-
-put 0755 "$PORT_DIR/Chrono Trigger.sh"        "Chrono Trigger.sh"
-put 0755 "$BINARY"                            "chrono/chrono-nextos"
-put 0644 "$PORT_DIR/nxport.json"              "chrono/nxport.json"
-put 0644 "$PORT_DIR/README.md"                "chrono/README.md"
-put 0644 "$PORT_DIR/CHANGELOG.md"             "chrono/CHANGELOG.md"
-put 0644 "$PORT_DIR/NOTICE.md"                "chrono/NOTICE.md"
-put 0644 "$PORT_DIR/INSTALLATION.md"          "chrono/INSTALLATION.md"
-if [[ -f "$PORT_DIR/LICENSE" ]]; then
-  put 0644 "$PORT_DIR/LICENSE" "chrono/LICENSE"
-else
-  put 0644 "$REPO_ROOT/LICENSE" "chrono/LICENSE"
-fi
-put 0644 "$PORT_DIR/licenses/NXExtract-MIT.txt" "chrono/licenses/NXExtract-MIT.txt"
-put 0644 "$PORT_DIR/fonts/NotoSans-Regular.ttf" "chrono/fonts/NotoSans-Regular.ttf"
-put 0644 "$PORT_DIR/fonts/OFL.txt"              "chrono/fonts/OFL.txt"
-put 0644 "$STATIC_DIR/gamedata/README.txt"      "chrono/gamedata/README.txt"
-put 0644 "$STATIC_DIR/assets/README.txt"        "chrono/assets/README.txt"
-put 0644 "$PORT_DIR/version.txt"                "chrono/version.txt"
-put 0755 "$PORT_DIR/nxextract/nxextract.py"     "chrono/nxextract/nxextract.py"
-put 0755 "$PORT_DIR/nxextract/nxextract-ui"     "chrono/nxextract/nxextract-ui"
-put 0755 "$PORT_DIR/nxextract/nxextract-runtime-env.sh" \
-  "chrono/nxextract/nxextract-runtime-env.sh"
-put 0755 "$PORT_DIR/nxextract/run-extractor.sh" \
-  "chrono/nxextract/run-extractor.sh"
-put 0644 "$PORT_DIR/extractor.json"             "chrono/extractor.json"
-put 0644 "$PORT_DIR/nxextract-version.txt"      "chrono/nxextract-version.txt"
-
-# GUARD DOS SHA PINADOS (licao Stardew v1.1.7): `nxextract-version.txt` registra
-# o sha256 de cada arquivo vendorizado. Mexer no extrator ou na receita e esquecer
-# de regerar o pino ja mandou release com o pino MENTINDO sobre o conteudo. Aqui
-# o pacote FALHA em vez de sair com registro errado.
-verify_pins() {
-  local pins=$PORT_DIR/nxextract-version.txt name expected actual bad=0
-  [ -f "$pins" ] || fail "nxextract-version.txt ausente"
-  while read -r name expected; do
-    case "$name" in ''|'#'*) continue ;; esac
-    [ -f "$PORT_DIR/$name" ] || fail "pino aponta para arquivo ausente: $name"
-    actual=$(sha256sum -- "$PORT_DIR/$name" | cut -d' ' -f1)
-    if [ "$actual" != "$expected" ]; then
-      printf 'pino DESATUALIZADO: %s\n  registrado: %s\n  real:       %s\n' \
-        "$name" "$expected" "$actual" >&2
-      bad=1
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+PORT_DIR=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd -P)
+FRAMEWORK_ROOT=${NEXTOS_FRAMEWORK_ROOT:-${NX_FRAMEWORK_ROOT:-}}
+if [[ -z $FRAMEWORK_ROOT ]]; then
+  # A port inside the monorepo finds the framework two levels up; a port in
+  # its own repository names it through the environment.
+  for candidate in "$PORT_DIR/../../framework" "$PORT_DIR/../nextos_ports_android/framework"; do
+    if [[ -f $candidate/nxbootstrap/VERSION ]]; then
+      FRAMEWORK_ROOT=$(CDPATH= cd -- "$candidate" && pwd -P); break
     fi
-  done <<EOF
-$(sed -n 's/^\([^ ]*\) sha256=\([0-9a-f]\{64\}\)$/\1 \2/p' "$pins")
-EOF
-  [ "$bad" -eq 0 ] ||
-    fail "regenere nxextract-version.txt antes de empacotar (sha pinado != arquivo real)"
-  printf 'pinos do NXExtract conferidos contra os arquivos reais\n'
-}
-verify_pins
+  done
+fi
+[[ -n $FRAMEWORK_ROOT && -f $FRAMEWORK_ROOT/nxbootstrap/VERSION ]] ||
+  { printf 'set NEXTOS_FRAMEWORK_ROOT to the pinned NextOS framework tree\n' >&2; exit 1; }
 
-glibc_at_most() {
-  local candidate=$1 maximum=$2 newest version major minor machine
-  machine=$(readelf -h "$candidate" |
-    sed -n 's/^[[:space:]]*Machine:[[:space:]]*//p')
-  [[ $machine == AArch64 ]] ||
-    fail "${candidate#"$STAGE/"} nao e' AArch64 (achado: $machine)"
-  newest=$(readelf --version-info "$candidate" 2>/dev/null |
-    grep -oE 'GLIBC_[0-9]+([.][0-9]+)*' | sort -Vu | tail -1)
-  [[ -n $newest ]] || fail "ABI glibc indeterminada: ${candidate#"$STAGE/"}"
-  version=${newest#GLIBC_}
-  major=${version%%.*}
-  minor=${version#*.}; minor=${minor%%.*}
-  if (( major > 2 || (major == 2 && minor > maximum) )); then
-    fail "${candidate#"$STAGE/"} exige $newest (maximo: GLIBC_2.$maximum)"
+NXRELEASE="$FRAMEWORK_ROOT/nxrelease/nxrelease.py"
+RENDER="$FRAMEWORK_ROOT/nxrelease/nx-render-manifest.py"
+MANIFEST="$PORT_DIR/nxrelease.json"
+PORT_ID=chrono
+SOURCE_URL=https://github.com/NextOs-Ports/chrono-nextos
+MAX_GLIBC=2.30
+
+fail() { printf '%s package error: %s\n' "$PORT_ID" "$*" >&2; exit 1; }
+
+[[ -f $NXRELEASE ]] || fail "release tool missing: $NXRELEASE"
+[[ -f $RENDER ]] || fail "manifest renderer missing: $RENDER"
+
+# The loader is always rebuilt from source: a package that ships a binary
+# nobody rebuilt is how a fix in src/ silently never reaches a device.
+if [[ ${NX_SKIP_BUILD:-0} != 1 ]]; then
+  if [[ -x $PORT_DIR/build.sh ]]; then
+    (cd "$PORT_DIR" && ./build.sh) || fail 'loader build failed'
+  elif [[ -x $PORT_DIR/build_universal.sh ]]; then
+    (cd "$PORT_DIR" && ./build_universal.sh) || fail 'loader build failed'
+  else
+    fail 'no build.sh or build_universal.sh'
   fi
-}
-
-# Auditoria: o loader e a UI do NXExtract sao os UNICOS ELFs permitidos. As
-# bibliotecas Android originais entram depois, fornecidas pelo dono do jogo.
-while IFS= read -r -d '' candidate; do
-  kind=$(file -b "$candidate")
-  case "$kind" in
-    *ELF*)
-      relative=${candidate#"$STAGE/"}
-      case "$relative" in
-        chrono/chrono-nextos|chrono/nxextract/nxextract-ui) ;;
-        *) fail "ELF inesperado entrou no pacote: $relative" ;;
-      esac
-      glibc_at_most "$candidate" 30
-      ;;
-    *PE32*|*Mach-O*)
-      fail "executavel estrangeiro no pacote: ${candidate#"$STAGE/"}"
-      ;;
-  esac
-done < <(find "$STAGE" -type f -print0)
-
-PAD_LAYOUT=$(readelf -sW "$STAGE/chrono/chrono-nextos" |
-  awk '$4 == "TLS" && $8 == "g_bionic_guard_pad" {
-    value=$2 ":" $3
-  } END { print value }')
-[[ $PAD_LAYOUT == 0000000000000000:256 ]] ||
-  fail "layout TLS auditado mudou: pad=$PAD_LAYOUT"
-
-# Bits +x esperados: nenhuma etapa critica depende deles, mas o zip precisa
-# entregar o conjunto certo (a lista nao pode encolher junto com refactor).
-for expected in "Chrono Trigger.sh" chrono/chrono-nextos \
-                chrono/nxextract/nxextract.py \
-                chrono/nxextract/nxextract-ui \
-                chrono/nxextract/nxextract-runtime-env.sh \
-                chrono/nxextract/run-extractor.sh; do
-  [[ -x "$STAGE/$expected" ]] || fail "faltou bit +x esperado: $expected"
-done
-
-bash -n "$STAGE/Chrono Trigger.sh"
-bash -n "$STAGE/chrono/nxextract/nxextract-runtime-env.sh"
-bash -n "$STAGE/chrono/nxextract/run-extractor.sh"
-grep -Fq 'command ls -Lldn /proc/self/fd/9' "$STAGE/Chrono Trigger.sh" ||
-  fail "o launcher nao contem o lock portavel sem stat"
-grep -Fq 'chrono-launcher-error.$$.log' "$STAGE/Chrono Trigger.sh" ||
-  fail "o launcher nao gera diagnostico antes do log principal"
-grep -Fq 'NXBOOTSTRAP_EARLY_LOG_ACTIVE=1' "$STAGE/Chrono Trigger.sh" ||
-  fail "o trap de diagnostico precoce nao esta ativo"
-while IFS= read -r -d '' shell_path; do
-  if grep -En \
-      '(^|[;&|({[:space:]])(command[[:space:]]+)?stat([[:space:]]|$)' \
-      "$shell_path" | grep -Ev ':[[:space:]]*#'; then
-    fail "um caminho shell do pacote voltou a depender do comando externo stat: ${shell_path#"$STAGE/"}"
-  fi
-done < <(find "$STAGE" -type f -name '*.sh' -print0)
-if grep -En '^[[:space:]]*(export[[:space:]]+)?SDL_(VIDEO|AUDIO)DRIVER=' \
-    "$STAGE/Chrono Trigger.sh"; then
-  fail "o launcher nao pode fixar backend SDL de video ou audio"
-fi
-if find "$STAGE" \( -name 'nxbootstrap.sh' -o -name 'run.sh' -o \
-    -name 'chrono-universal' \) -print -quit | grep -q .; then
-  fail "legacy launcher layer or executable name entered the package"
-fi
-if grep -En \
-    '(^|[[:space:]])(setsid|nohup|systemctl[[:space:]]+(stop|mask|restart)|pkill)([[:space:]]|$)' \
-    "$STAGE/Chrono Trigger.sh" |
-    grep -v '^[^:]*:[0-9]*:[[:space:]]*#'; then
-  fail "o launcher contem comando de ciclo de vida proibido"
-fi
-if grep -En 'gptokeyb' "$STAGE/Chrono Trigger.sh" |
-    grep -v '^[^:]*:[0-9]*:#'; then
-  fail "gptokeyb roubaria o pad: o controle deste port e' NATIVO"
 fi
 
-# Nenhum dado de jogo, nenhuma lib proprietaria, nenhum artefato de dev.
-if find "$STAGE" \( \
-    -iname '*.apk' -o -iname '*.apkm' -o -iname '*.apks' -o \
-    -iname '*.xapk' -o -iname '*.obb' -o -iname '*.dex' -o \
-    -name 'libchrono.so' -o -name 'libc++_shared.so' -o \
-    -name 'libencrypt.so' -o -name 'resources.bin' -o \
-    -name '*.dat' -o -name 'Roboto*.ttf' \
-  \) -print -quit | grep -q .; then
-  fail "dado de jogo proprietario entrou na arvore publica"
-fi
-if find "$STAGE" \( \
-    -iname '*.log' -o -iname '*.raw' -o -iname '*.ppm' -o -iname '*.pcm' -o \
-    -name 'HANDOFF.md' -o -name '__pycache__' -o -name '*.pyc' -o \
-    -name 'userdata' -o -name 'debug*.log' -o -name 'scratchpad' \
-  \) -print -quit | grep -q .; then
-  fail "artefato de desenvolvimento ou pessoal entrou na arvore publica"
-fi
-if grep -IRnE '192[.]168[.]|169[.]254[.]|10[.][0-9]+[.]|/home/|/media/|root@|[A-Za-z0-9._%+-]+@(gmail|hotmail|outlook|yahoo|proton)[.]' \
-    "$STAGE" --include='*.sh' --include='*.md' --include='*.txt' \
-    --include='*.json' --include='*.py'; then
-  fail "texto da release contem endereco de teste ou caminho pessoal"
-fi
+python3 -B "$RENDER" --port-dir "$PORT_DIR" --framework-root "$FRAMEWORK_ROOT" \
+  --source-url "$SOURCE_URL" --max-glibc "$MAX_GLIBC" || fail 'manifest render failed'
 
-(
-  cd "$STAGE"
-  find . -type f ! -path './chrono/PACKAGE-MANIFEST.sha256' \
-    -printf '%P\n' | sort | while IFS= read -r relative; do
-      sha256sum -- "$relative"
-    done
-) > "$STAGE/chrono/PACKAGE-MANIFEST.sha256"
+python3 -B "$NXRELEASE" validate --manifest "$MANIFEST" --max-glibc "$MAX_GLIBC" ||
+  fail 'manifest validation failed'
 
-find "$STAGE" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
-(
-  cd "$STAGE"
-  find . -type f -printf '%P\n' | sort | zip -X -9 -q "$TMP_ZIP" -@
-)
-unzip -tq "$TMP_ZIP" >/dev/null
+VERSION=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["package"]["version"])' "$MANIFEST")
+DESTINATION=${1:-"$PORT_DIR/.build/$PORT_ID-$VERSION-nxrelease"}
+ARCHIVE_NAME="$PORT_ID.zip"
 
-VERIFY="$TMP_ROOT/verify"
-mkdir -p "$VERIFY"
-unzip -q "$TMP_ZIP" -d "$VERIFY"
-(
-  cd "$VERIFY"
-  sha256sum -c chrono/PACKAGE-MANIFEST.sha256 >/dev/null
-)
+STAGE=$(mktemp -d "${TMPDIR:-/tmp}/$PORT_ID-package.XXXXXX")
+trap 'rm -rf -- "$STAGE"' EXIT INT TERM
+[[ ! -e $DESTINATION ]] || fail "destination already exists (release outputs are never overwritten): $DESTINATION"
+mkdir -p -- "$(dirname -- "$DESTINATION")"
 
-mkdir -p "$(dirname -- "$OUTPUT")"
-OUTPUT_DIR=$(cd -- "$(dirname -- "$OUTPUT")" && pwd -P)
-OUTPUT="$OUTPUT_DIR/$(basename -- "$OUTPUT")"
-install -m 0644 "$TMP_ZIP" "$OUTPUT"
-(
-  cd "$OUTPUT_DIR"
-  sha256sum "$(basename -- "$OUTPUT")" > "$(basename -- "$OUTPUT").sha256"
-)
+python3 -B "$NXRELEASE" bundle \
+  --manifest "$MANIFEST" --stage "$STAGE/stage" \
+  --destination "$DESTINATION" --archive-name "$ARCHIVE_NAME" \
+  --max-glibc "$MAX_GLIBC" || fail 'bundle failed'
 
-printf 'PACKAGE OK: %s\n' "$OUTPUT"
-printf 'loader ABI: GLIBC <= 2.30 | TLS pad %s\n' "$PAD_LAYOUT"
-sha256sum "$BINARY" "$OUTPUT"
+ARCHIVE="$DESTINATION/$ARCHIVE_NAME"
+[[ -f $ARCHIVE ]] || fail "archive not produced: $ARCHIVE"
+
+python3 -B "$NXRELEASE" verify --archive "$ARCHIVE" --max-glibc "$MAX_GLIBC" ||
+  fail 'archive verification failed'
+python3 -B "$FRAMEWORK_ROOT/tests/audit-portmaster-zip.py" "$ARCHIVE" ||
+  fail 'PortMaster zip audit failed'
+
+sha256sum "$ARCHIVE" | awk '{print $1"  '"$ARCHIVE_NAME"'"}' > "$ARCHIVE.sha256"
+printf '%s PUBLIC PACKAGE PASS: %s\n' "$PORT_ID" "$ARCHIVE"
+sha256sum "$ARCHIVE"

@@ -8,14 +8,13 @@
   "language": {
     "default": "en",
     "supported": [
-      "en",
-      "ja"
+      "en"
     ]
   },
   "launcher_name": "Chrono Trigger.sh",
   "nxextract": {
     "mode": "yes",
-    "version": "1.2.6"
+    "version": "1.2.10"
   },
   "prepare_script": "",
   "private_library_paths": [],
@@ -31,6 +30,7 @@
   ],
   "required_files": [
     "chrono-nextos",
+    "nxsplash-nextos",
     "libchrono.so",
     "libc++_shared.so",
     "assets/resources.bin",
