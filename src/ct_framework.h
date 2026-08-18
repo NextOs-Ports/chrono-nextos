@@ -26,6 +26,10 @@ void ct_framework_observe_input(ct_framework *framework,
                                 const SDL_Event *event);
 void ct_framework_poll_input(ct_framework *framework);
 int ct_framework_has_controller(const ct_framework *framework);
+/* First connected pad's SDL_GameController (NULL when none). For the exit
+ * chord to bind SDL and mute the evdev fallback. Never close/remap it. */
+struct _SDL_GameController;
+struct _SDL_GameController *ct_framework_sdl_controller(const ct_framework *framework);
 int ct_framework_consume_quit(ct_framework *framework);
 void ct_framework_close_input(ct_framework *framework);
 

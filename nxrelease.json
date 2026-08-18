@@ -88,7 +88,7 @@
         "libpthread.so.0"
       ],
       "provenance": "port build script; framework pinned by FRAMEWORK-PIN.json",
-      "sha256": "f31aa801196c440b3d9c2fb96ddbe814ed0f0435a3ee0ba0bad6c297e78846a3",
+      "sha256": "ad098582650f9e0d29c1c6b2372be59c9a9862f5aa01e2556af05cdaee54ddfe",
       "soname": null,
       "source": "chrono-nextos",
       "target": "chrono/chrono-nextos"
@@ -153,7 +153,7 @@
     {
       "kind": "payload",
       "mode": "0644",
-      "sha256": "2df2bd7011e87351e2e3e296ddb7f2520270a76160f95b2d64b337167294f28c",
+      "sha256": "1575e1af4a95f12f70b4ee6a6adce8160953d93ea17dc2611b90883ccc3ad3b8",
       "source": "version.txt",
       "target": "chrono/version.txt"
     },
@@ -283,7 +283,7 @@
     },
     "port_dir": "chrono",
     "profile": "universal-portmaster",
-    "version": "1.0.9"
+    "version": "1.1.0"
   },
   "portmaster_metadata": {
     "gameinfo_xml": {

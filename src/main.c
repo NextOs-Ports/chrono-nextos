@@ -437,6 +437,7 @@ int main(int argc, char *argv[]) {
   int announce_at = 120; /* ~2 s de cena viva antes de anunciar o controle */
   while (!ct_exit_requested()) {
     flush_pending_releases();
+    ct_exit_chord_set_controller(ct_framework_sdl_controller(framework));
     ct_exit_chord_poll();
     if (announce_at > 0 && --announce_at == 0 && ctrlConnected &&
         ct_framework_has_controller(framework) && !g_use_keyboard) {

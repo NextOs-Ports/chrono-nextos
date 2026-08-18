@@ -3,6 +3,7 @@
 
 #include "nxinput_core.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -10,6 +11,8 @@ typedef struct nxinput_slot {
   SDL_GameController *controller;
   SDL_JoystickID instance_id;
   uint32_t generation;
+  uint32_t capabilities;
+  int left_stick_binding_present;
   int16_t raw_axes[NXINPUT_CORE_AXIS_COUNT];
   nxinput_core_pad core;
   char name[NXINPUT_NAME_MAX];
@@ -24,6 +27,7 @@ struct nxinput_context {
   int previous_controller_event_state;
   int focused;
   int quit_requested;
+  int host_analog_sticks_hint;
   nxinput_cursor_context cursor_context;
 };
 
@@ -110,8 +114,7 @@ static int nxinput_config_valid(const nxinput_config *config) {
 
 /* SDL normally imports this environment variable during controller subsystem
  * initialization. Re-applying each non-empty line also covers a host that had
- * initialized SDL before the PortMaster mapping became visible. We never
- * replace, synthesize or clear the inherited value. */
+ * initialized SDL before the PortMaster mapping became visible. */
 static void nxinput_apply_inherited_mappings(void) {
   const char *mapping_file;
   const char *environment;
@@ -153,6 +156,282 @@ static void nxinput_apply_inherited_mappings(void) {
     line = next;
   }
   SDL_free(copy);
+}
+
+static int nxinput_button_uses_raw(SDL_GameController *controller,
+                                   SDL_GameControllerButton button,
+                                   int raw_button) {
+  SDL_GameControllerButtonBind binding =
+      SDL_GameControllerGetBindForButton(controller, button);
+  return binding.bindType == SDL_CONTROLLER_BINDTYPE_BUTTON &&
+         binding.value.button == raw_button;
+}
+
+static int nxinput_button_is_unmapped(SDL_GameController *controller,
+                                      SDL_GameControllerButton button) {
+  SDL_GameControllerButtonBind binding =
+      SDL_GameControllerGetBindForButton(controller, button);
+  return binding.bindType == SDL_CONTROLLER_BINDTYPE_NONE;
+}
+
+static int nxinput_axis_uses_raw_axis(SDL_GameController *controller,
+                                      SDL_GameControllerAxis axis,
+                                      int raw_axis) {
+  SDL_GameControllerButtonBind binding =
+      SDL_GameControllerGetBindForAxis(controller, axis);
+  return binding.bindType == SDL_CONTROLLER_BINDTYPE_AXIS &&
+         binding.value.axis == raw_axis;
+}
+
+static int nxinput_axis_uses_raw_button(SDL_GameController *controller,
+                                        SDL_GameControllerAxis axis,
+                                        int raw_button) {
+  SDL_GameControllerButtonBind binding =
+      SDL_GameControllerGetBindForAxis(controller, axis);
+  return binding.bindType == SDL_CONTROLLER_BINDTYPE_BUTTON &&
+         binding.value.button == raw_button;
+}
+
+static int nxinput_binding_reachable(SDL_GameController *controller,
+                                     SDL_GameControllerButtonBind binding) {
+  SDL_Joystick *joystick;
+
+  if (!controller)
+    return 0;
+  joystick = SDL_GameControllerGetJoystick(controller);
+  if (!joystick)
+    return 0;
+
+  switch (binding.bindType) {
+  case SDL_CONTROLLER_BINDTYPE_BUTTON:
+    return binding.value.button >= 0 &&
+           binding.value.button < SDL_JoystickNumButtons(joystick);
+  case SDL_CONTROLLER_BINDTYPE_AXIS:
+    return binding.value.axis >= 0 &&
+           binding.value.axis < SDL_JoystickNumAxes(joystick);
+  case SDL_CONTROLLER_BINDTYPE_HAT:
+    return binding.value.hat.hat < SDL_JoystickNumHats(joystick) &&
+           binding.value.hat.hat_mask != 0;
+  case SDL_CONTROLLER_BINDTYPE_NONE:
+  default:
+    return 0;
+  }
+}
+
+static void nxinput_detect_slot_capabilities(nxinput_slot *slot) {
+  SDL_GameControllerButtonBind dpad_up;
+  SDL_GameControllerButtonBind dpad_down;
+  SDL_GameControllerButtonBind dpad_left;
+  SDL_GameControllerButtonBind dpad_right;
+  SDL_GameControllerButtonBind left_x;
+  SDL_GameControllerButtonBind left_y;
+  SDL_GameControllerButtonBind right_x;
+  SDL_GameControllerButtonBind right_y;
+  SDL_GameControllerButtonBind left_trigger;
+  SDL_GameControllerButtonBind right_trigger;
+
+  if (!slot)
+    return;
+  slot->capabilities = 0u;
+  slot->left_stick_binding_present = 0;
+  if (!slot->controller)
+    return;
+
+  dpad_up = SDL_GameControllerGetBindForButton(
+      slot->controller, SDL_CONTROLLER_BUTTON_DPAD_UP);
+  dpad_down = SDL_GameControllerGetBindForButton(
+      slot->controller, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
+  dpad_left = SDL_GameControllerGetBindForButton(
+      slot->controller, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
+  dpad_right = SDL_GameControllerGetBindForButton(
+      slot->controller, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
+  left_x = SDL_GameControllerGetBindForAxis(
+      slot->controller, SDL_CONTROLLER_AXIS_LEFTX);
+  left_y = SDL_GameControllerGetBindForAxis(
+      slot->controller, SDL_CONTROLLER_AXIS_LEFTY);
+  right_x = SDL_GameControllerGetBindForAxis(
+      slot->controller, SDL_CONTROLLER_AXIS_RIGHTX);
+  right_y = SDL_GameControllerGetBindForAxis(
+      slot->controller, SDL_CONTROLLER_AXIS_RIGHTY);
+  left_trigger = SDL_GameControllerGetBindForAxis(
+      slot->controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT);
+  right_trigger = SDL_GameControllerGetBindForAxis(
+      slot->controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT);
+
+  if (nxinput_binding_reachable(slot->controller, dpad_up) &&
+      nxinput_binding_reachable(slot->controller, dpad_down) &&
+      nxinput_binding_reachable(slot->controller, dpad_left) &&
+      nxinput_binding_reachable(slot->controller, dpad_right))
+    slot->capabilities |= NXINPUT_PAD_CAP_DPAD;
+  slot->left_stick_binding_present =
+      nxinput_binding_reachable(slot->controller, left_x) ||
+      nxinput_binding_reachable(slot->controller, left_y);
+  if (nxinput_binding_reachable(slot->controller, left_x) &&
+      nxinput_binding_reachable(slot->controller, left_y))
+    slot->capabilities |= NXINPUT_PAD_CAP_LEFT_STICK;
+  if (nxinput_binding_reachable(slot->controller, right_x) &&
+      nxinput_binding_reachable(slot->controller, right_y))
+    slot->capabilities |= NXINPUT_PAD_CAP_RIGHT_STICK;
+  if (nxinput_binding_reachable(slot->controller, left_trigger))
+    slot->capabilities |= NXINPUT_PAD_CAP_LEFT_TRIGGER;
+  if (nxinput_binding_reachable(slot->controller, right_trigger))
+    slot->capabilities |= NXINPUT_PAD_CAP_RIGHT_TRIGGER;
+}
+
+static int nxinput_read_host_analog_sticks_hint(void) {
+  const char *value = SDL_getenv("NXINPUT_ANALOG_STICKS_HINT");
+  if (!value ||
+      (value[0] != '0' && value[0] != '1' && value[0] != '2') ||
+      value[1] != '\0')
+    return NXINPUT_ANALOG_STICKS_HINT_UNKNOWN;
+  return (int)(value[0] - '0');
+}
+
+/* Some firmware databases expose one coherent handheld topology but label its
+ * physical R3 as GUIDE and use database-order face semantics. The complete
+ * topology is the proof: no name, GUID, VID/PID, CFW or device path is used.
+ * A near miss is deliberately left untouched. */
+static int nxinput_has_portmaster_handheld_gap(
+    SDL_GameController *controller) {
+  SDL_Joystick *joystick = SDL_GameControllerGetJoystick(controller);
+  int linear_faces;
+  int portmaster_faces;
+
+  if (!joystick || SDL_JoystickNumButtons(joystick) < 12)
+    return 0;
+
+  linear_faces =
+      nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_A, 0) &&
+      nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_B, 1) &&
+      nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_X, 2) &&
+      nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_Y, 3);
+  portmaster_faces =
+      nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_A, 1) &&
+      nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_B, 0) &&
+      nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_X, 3) &&
+      nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_Y, 2);
+
+  return (linear_faces || portmaster_faces) &&
+         nxinput_button_uses_raw(
+             controller, SDL_CONTROLLER_BUTTON_LEFTSHOULDER, 4) &&
+         nxinput_button_uses_raw(
+             controller, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 5) &&
+         nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_START, 6) &&
+         nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_BACK, 7) &&
+         nxinput_button_uses_raw(
+             controller, SDL_CONTROLLER_BUTTON_LEFTSTICK, 8) &&
+         nxinput_button_uses_raw(controller, SDL_CONTROLLER_BUTTON_GUIDE, 9) &&
+         nxinput_button_is_unmapped(
+             controller, SDL_CONTROLLER_BUTTON_RIGHTSTICK) &&
+         nxinput_axis_uses_raw_button(
+             controller, SDL_CONTROLLER_AXIS_TRIGGERLEFT, 10) &&
+         nxinput_axis_uses_raw_button(
+             controller, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 11) &&
+         nxinput_axis_uses_raw_axis(
+             controller, SDL_CONTROLLER_AXIS_LEFTX, 0) &&
+         nxinput_axis_uses_raw_axis(
+             controller, SDL_CONTROLLER_AXIS_LEFTY, 1) &&
+         nxinput_axis_uses_raw_axis(
+             controller, SDL_CONTROLLER_AXIS_RIGHTX, 2) &&
+         nxinput_axis_uses_raw_axis(
+             controller, SDL_CONTROLLER_AXIS_RIGHTY, 3);
+}
+
+static int nxinput_mapping_token_is(const char *token, size_t token_length,
+                                    const char *key) {
+  size_t key_length = strlen(key);
+  return token_length > key_length && token[key_length] == ':' &&
+         memcmp(token, key, key_length) == 0;
+}
+
+/* Keep GUID, controller name, hats, axis inversion and platform tokens from
+ * the inherited mapping. Only the five contradicted semantic fields change. */
+static char *nxinput_rewrite_portmaster_handheld_mapping(
+    const char *mapping) {
+  static const struct {
+    const char *key;
+    const char *replacement;
+  } replacements[] = {
+      {"a", "a:b1"},
+      {"b", "b:b0"},
+      {"x", "x:b3"},
+      {"y", "y:b2"},
+      {"guide", "rightstick:b9"},
+  };
+  size_t capacity;
+  size_t output_length = 0u;
+  unsigned int field = 0u;
+  char *output;
+  const char *cursor;
+
+  if (!mapping)
+    return NULL;
+  capacity = strlen(mapping) + 32u;
+  output = (char *)SDL_malloc(capacity);
+  if (!output)
+    return NULL;
+
+  cursor = mapping;
+  while (*cursor != '\0') {
+    const char *comma = strchr(cursor, ',');
+    size_t token_length = comma ? (size_t)(comma - cursor) : strlen(cursor);
+    const char *value = cursor;
+    size_t value_length = token_length;
+    size_t index;
+
+    if (field >= 2u) {
+      for (index = 0u; index < sizeof(replacements) / sizeof(replacements[0]);
+           index++) {
+        if (nxinput_mapping_token_is(cursor, token_length,
+                                     replacements[index].key)) {
+          value = replacements[index].replacement;
+          value_length = strlen(value);
+          break;
+        }
+      }
+    }
+    if (output_length + value_length + (comma ? 1u : 0u) + 1u > capacity) {
+      SDL_free(output);
+      return NULL;
+    }
+    memcpy(output + output_length, value, value_length);
+    output_length += value_length;
+    if (!comma)
+      break;
+    output[output_length++] = ',';
+    cursor = comma + 1;
+    field++;
+  }
+  output[output_length] = '\0';
+  return output;
+}
+
+static void nxinput_normalize_device_mapping(int device_index) {
+  SDL_GameController *controller;
+  char *mapping;
+  char *normalized;
+  int matches;
+
+  if (device_index < 0 || !SDL_IsGameController(device_index))
+    return;
+  controller = SDL_GameControllerOpen(device_index);
+  if (!controller)
+    return;
+  matches = nxinput_has_portmaster_handheld_gap(controller);
+  mapping = matches ? SDL_GameControllerMapping(controller) : NULL;
+  SDL_GameControllerClose(controller);
+  if (!mapping)
+    return;
+
+  normalized = nxinput_rewrite_portmaster_handheld_mapping(mapping);
+  SDL_free(mapping);
+  if (!normalized)
+    return;
+  if (SDL_GameControllerAddMapping(normalized) >= 0)
+    (void)fprintf(stderr,
+                  "[nxinput] mapping normalizado por capacidades: "
+                  "face buttons + R3 compativeis com PortMaster\n");
+  SDL_free(normalized);
 }
 
 static int nxinput_find_instance_internal(const nxinput_context *input,
@@ -219,6 +498,8 @@ static void nxinput_disconnect_slot(nxinput_context *input,
   slot->controller = NULL;
   slot->instance_id = (SDL_JoystickID)-1;
   slot->generation++;
+  slot->capabilities = 0u;
+  slot->left_stick_binding_present = 0;
   slot->name[0] = '\0';
   slot->guid[0] = '\0';
 }
@@ -236,6 +517,8 @@ static int nxinput_open_device(nxinput_context *input, int device_index) {
 
   if (device_index < 0 || !SDL_IsGameController(device_index))
     return 0;
+
+  nxinput_normalize_device_mapping(device_index);
 
   controller = SDL_GameControllerOpen(device_index);
   if (!controller)
@@ -276,6 +559,7 @@ static int nxinput_open_device(nxinput_context *input, int device_index) {
 
   slot->controller = controller;
   slot->instance_id = instance_id;
+  nxinput_detect_slot_capabilities(slot);
   slot->generation++;
   nxinput_copy_string(slot->name, sizeof(slot->name),
                       SDL_GameControllerName(controller));
@@ -322,6 +606,7 @@ nxinput_context *nxinput_create(const nxinput_config *config) {
   }
   input->config = effective;
   input->focused = 1;
+  input->host_analog_sticks_hint = nxinput_read_host_analog_sticks_hint();
   input->cursor_context = NXINPUT_CURSOR_OFF;
   input->previous_controller_event_state = SDL_QUERY;
   for (index = 0u; index < NXINPUT_MAX_PADS; index++) {
@@ -399,8 +684,17 @@ void nxinput_observe_event(nxinput_context *input, const SDL_Event *event) {
   case SDL_CONTROLLERDEVICEREMAPPED:
     slot_index = nxinput_find_instance_internal(
         input, (SDL_JoystickID)event->cdevice.which);
-    if (slot_index >= 0)
+    if (slot_index >= 0) {
+      uint32_t old_capabilities = input->slots[slot_index].capabilities;
+      int old_left_binding =
+          input->slots[slot_index].left_stick_binding_present;
+      nxinput_detect_slot_capabilities(&input->slots[slot_index]);
+      if (old_capabilities != input->slots[slot_index].capabilities ||
+          old_left_binding !=
+              input->slots[slot_index].left_stick_binding_present)
+        input->slots[slot_index].generation++;
       nxinput_sample_slot(input, &input->slots[slot_index]);
+    }
     break;
 #endif
   case SDL_CONTROLLERBUTTONDOWN:
@@ -523,17 +817,54 @@ int nxinput_first_connected(const nxinput_context *input) {
   return -1;
 }
 
+SDL_GameController *nxinput_pad_sdl_controller(const nxinput_context *input,
+                                               unsigned int slot) {
+  if (!input || slot >= NXINPUT_MAX_PADS)
+    return NULL;
+  return input->slots[slot].controller;
+}
+
 int nxinput_find_instance(const nxinput_context *input, int32_t instance_id) {
   if (!input)
     return -1;
   return nxinput_find_instance_internal(input, (SDL_JoystickID)instance_id);
 }
 
-int nxinput_get_pad(const nxinput_context *input, unsigned int slot_index,
-                    nxinput_pad_state *state) {
+static void nxinput_apply_pad_options(const nxinput_slot *slot,
+                                      uint32_t options,
+                                      nxinput_pad_state *state) {
+  int horizontal;
+  int vertical;
+  float scale;
+
+  if (!slot || !state ||
+      (options & NXINPUT_PAD_OPTION_DPAD_LEFT_STICK_IF_MISSING) == 0u ||
+      (slot->capabilities & NXINPUT_PAD_CAP_DPAD) == 0u ||
+      slot->left_stick_binding_present)
+    return;
+
+  horizontal =
+      ((state->buttons &
+        NXINPUT_BUTTON_BIT(NXINPUT_BUTTON_DPAD_RIGHT)) != 0u) -
+      ((state->buttons &
+        NXINPUT_BUTTON_BIT(NXINPUT_BUTTON_DPAD_LEFT)) != 0u);
+  vertical =
+      ((state->buttons &
+        NXINPUT_BUTTON_BIT(NXINPUT_BUTTON_DPAD_DOWN)) != 0u) -
+      ((state->buttons &
+        NXINPUT_BUTTON_BIT(NXINPUT_BUTTON_DPAD_UP)) != 0u);
+  scale = horizontal != 0 && vertical != 0 ? 0.70710678118f : 1.0f;
+  state->left_x = (float)horizontal * scale;
+  state->left_y = (float)vertical * scale;
+}
+
+int nxinput_get_pad_with_options(const nxinput_context *input,
+                                 unsigned int slot_index, uint32_t options,
+                                 nxinput_pad_state *state) {
   const nxinput_slot *slot;
 
-  if (!input || !state || slot_index >= NXINPUT_MAX_PADS)
+  if (!input || !state || slot_index >= NXINPUT_MAX_PADS ||
+      (options & ~NXINPUT_PAD_OPTION_MASK_ALL) != 0u)
     return 0;
   slot = &input->slots[slot_index];
   memset(state, 0, sizeof(*state));
@@ -553,7 +884,28 @@ int nxinput_get_pad(const nxinput_context *input, unsigned int slot_index,
   state->right_trigger = slot->core.right_trigger;
   nxinput_copy_string(state->name, sizeof(state->name), slot->name);
   nxinput_copy_string(state->guid, sizeof(state->guid), slot->guid);
+  nxinput_apply_pad_options(slot, options, state);
   return 1;
+}
+
+int nxinput_get_pad(const nxinput_context *input, unsigned int slot_index,
+                    nxinput_pad_state *state) {
+  return nxinput_get_pad_with_options(input, slot_index,
+                                      NXINPUT_PAD_OPTION_NONE, state);
+}
+
+int nxinput_get_pad_capabilities(const nxinput_context *input,
+                                 unsigned int slot_index,
+                                 uint32_t *capabilities) {
+  if (!input || !capabilities || slot_index >= NXINPUT_MAX_PADS)
+    return 0;
+  *capabilities = input->slots[slot_index].capabilities;
+  return 1;
+}
+
+int nxinput_host_analog_sticks_hint(const nxinput_context *input) {
+  return input ? input->host_analog_sticks_hint
+               : NXINPUT_ANALOG_STICKS_HINT_UNKNOWN;
 }
 
 uint32_t nxinput_consume_pressed(nxinput_context *input,
@@ -625,11 +977,17 @@ int nxinput_cursor_warp(nxinput_context *input, unsigned int slot_index,
   return 1;
 }
 
-int nxinput_cursor_update(nxinput_context *input, unsigned int slot_index,
-                          float delta_seconds, nxinput_cursor_state *state) {
+int nxinput_cursor_update_with_options(nxinput_context *input,
+                                       unsigned int slot_index,
+                                       float delta_seconds,
+                                       uint32_t options,
+                                       nxinput_cursor_state *state) {
   nxinput_slot *slot;
+  float cursor_x;
+  float cursor_y;
 
-  if (!input || !state || slot_index >= NXINPUT_MAX_PADS)
+  if (!input || !state || slot_index >= NXINPUT_MAX_PADS ||
+      (options & ~NXINPUT_CURSOR_OPTION_MASK_ALL) != 0u)
     return 0;
   slot = &input->slots[slot_index];
   memset(state, 0, sizeof(*state));
@@ -643,10 +1001,24 @@ int nxinput_cursor_update(nxinput_context *input, unsigned int slot_index,
     return 1;
   }
 
-  nxinput_core_cursor_update(&slot->core, delta_seconds,
-                             input->config.cursor_speed,
-                             input->config.cursor_smoothing, state);
+  cursor_x = slot->core.right_x;
+  cursor_y = slot->core.right_y;
+  if ((options & NXINPUT_CURSOR_OPTION_LEFT_STICK_IF_RIGHT_MISSING) != 0u &&
+      (slot->capabilities & NXINPUT_PAD_CAP_RIGHT_STICK) == 0u &&
+      (slot->capabilities & NXINPUT_PAD_CAP_LEFT_STICK) != 0u) {
+    cursor_x = slot->core.left_x;
+    cursor_y = slot->core.left_y;
+  }
+  nxinput_core_cursor_update_axes(
+      &slot->core, cursor_x, cursor_y, delta_seconds,
+      input->config.cursor_speed, input->config.cursor_smoothing, state);
   return 1;
+}
+
+int nxinput_cursor_update(nxinput_context *input, unsigned int slot_index,
+                          float delta_seconds, nxinput_cursor_state *state) {
+  return nxinput_cursor_update_with_options(
+      input, slot_index, delta_seconds, NXINPUT_CURSOR_OPTION_NONE, state);
 }
 
 int nxinput_cursor_consume_click(nxinput_context *input,

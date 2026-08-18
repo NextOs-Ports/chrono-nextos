@@ -373,6 +373,16 @@ int ct_framework_has_controller(const ct_framework *framework) {
          nxinput_connected_count(framework->input) != 0u;
 }
 
+SDL_GameController *ct_framework_sdl_controller(const ct_framework *framework) {
+  int slot;
+  if (!framework || !framework->input)
+    return NULL;
+  slot = nxinput_first_connected(framework->input);
+  if (slot < 0)
+    return NULL;
+  return nxinput_pad_sdl_controller(framework->input, (unsigned int)slot);
+}
+
 int ct_framework_consume_quit(ct_framework *framework) {
   return framework && framework->input
              ? nxinput_consume_quit_request(framework->input)

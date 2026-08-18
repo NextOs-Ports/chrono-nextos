@@ -30,6 +30,14 @@
 #include "ct_platform.h"
 #include "util.h"
 
+/* Chord de saida canonico do framework: SDL BACK+START por estado (+ botao cru
+ * do joystick nos indices do mapping); evdev cru so' como fallback sem pad SDL.
+ * Nunca vigia BTN_SELECT/START literais com pad aberto (na familia H700 esses
+ * codigos sao L2/R2). Uma unica unidade de traducao define a implementacao. */
+#define NXINPUT_EVDEV_CHORD_LOG(...) do { debugPrintf(__VA_ARGS__); } while (0)
+#define NXINPUT_EVDEV_CHORD_IMPLEMENTATION
+#include "nxinput_evdev_chord.h"
+
 /* ------------------------------------------------------ diretorio do port --- */
 
 /* Nunca cravar a raiz de ROM. A ordem e': override explicito, HOME montado
@@ -181,73 +189,28 @@ void ct_single_instance_unlock(void) {
 
 /* ------------------------------------------------- combo de saida (evdev) --- */
 
-#define CT_EVDEV_DEVICES 8
-/* BTN_* nos headers novos, KEY_* nos antigos; os codigos sao ABI estavel. */
-#define CT_KEY_TRIGGER_HAPPY1 0x2c0
-#define CT_KEY_TRIGGER_HAPPY2 0x2c1
+/* O pad SDL corrente (ligado pelo main a cada frame). NULL = sem pad -> fallback
+ * evdev cru ativo; nao-NULL -> SDL manda e o evdev fica mudo. */
+static SDL_GameController *g_chord_pad;
 
-static int g_evdev_fd[CT_EVDEV_DEVICES];
-static int g_evdev_count = -1;
-static unsigned char g_evdev_select;
-static unsigned char g_evdev_start;
-
-#define CT_BIT_SET(bits, code)                                              \
-  ((bits[(code) / (8 * sizeof(unsigned long))] >>                           \
-    ((code) % (8 * sizeof(unsigned long)))) & 1UL)
-
-static int ct_evdev_is_gamepad(int fd) {
-  /* O tamanho do bitmap e' o do LEITOR (unsigned long do nosso processo). */
-  unsigned long keys[(KEY_MAX / (8 * sizeof(unsigned long))) + 1];
-  memset(keys, 0, sizeof keys);
-  if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof keys), keys) < 0) return 0;
-  return CT_BIT_SET(keys, BTN_SOUTH) || CT_BIT_SET(keys, BTN_A) ||
-         CT_BIT_SET(keys, CT_KEY_TRIGGER_HAPPY1);
+void ct_exit_chord_set_controller(struct _SDL_GameController *pad) {
+  g_chord_pad = pad;
 }
 
 void ct_exit_chord_open(void) {
-  if (g_evdev_count >= 0) return;
-  g_evdev_count = 0;
-  for (int index = 0; index < 32 && g_evdev_count < CT_EVDEV_DEVICES; ++index) {
-    char path[64];
-    snprintf(path, sizeof path, "/dev/input/event%d", index);
-    int fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0) continue;
-    if (!ct_evdev_is_gamepad(fd)) { close(fd); continue; }
-    char name[128] = "?";
-    (void)ioctl(fd, EVIOCGNAME(sizeof name), name);
-    debugPrintf("EXIT: combo tambem por evdev em %s (%s)\n", path, name);
-    g_evdev_fd[g_evdev_count++] = fd;
-  }
-  if (!g_evdev_count)
-    debugPrintf("EXIT: nenhum evdev de controle legivel; SELECT+START depende "
-                "so' do mapeamento SDL\n");
+  nx_evdev_chord_open();
 }
 
 void ct_exit_chord_poll(void) {
-  if (g_evdev_count <= 0) return;
-  struct input_event event;
-  for (int i = 0; i < g_evdev_count; ++i) {
-    while (read(g_evdev_fd[i], &event, sizeof event) == (ssize_t)sizeof event) {
-      if (event.type != EV_KEY) continue;
-      unsigned char down = event.value != 0; /* 1 press, 2 autorepeat */
-      switch (event.code) {
-        case BTN_SELECT:
-        case CT_KEY_TRIGGER_HAPPY1: g_evdev_select = down; break;
-        case BTN_START:
-        case CT_KEY_TRIGGER_HAPPY2: g_evdev_start = down; break;
-        default: break;
-      }
-    }
-  }
-  if (g_evdev_select && g_evdev_start) ct_request_exit("SELECT+START (evdev)");
+  SDL_GameController *pads[1];
+  pads[0] = g_chord_pad;
+  if (nx_exit_chord_update(pads, 1))
+    ct_request_exit("SELECT+START");
 }
 
 void ct_exit_chord_close(void) {
-  for (int i = 0; i < g_evdev_count && i < CT_EVDEV_DEVICES; ++i)
-    close(g_evdev_fd[i]);
-  g_evdev_count = -1;
-  g_evdev_select = 0;
-  g_evdev_start = 0;
+  nx_evdev_chord_close();
+  g_chord_pad = NULL;
 }
 
 /* ----------------------------------------------------------------- audio --- */

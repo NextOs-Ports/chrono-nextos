@@ -164,9 +164,10 @@ void nxinput_core_set_axes(
   pad->right_trigger = nxinput_core_trigger(raw_axes[5], trigger_deadzone);
 }
 
-void nxinput_core_cursor_update(nxinput_core_pad *pad, float delta_seconds,
-                                float speed, float smoothing,
-                                nxinput_cursor_state *state) {
+void nxinput_core_cursor_update_axes(nxinput_core_pad *pad, float input_x,
+                                     float input_y, float delta_seconds,
+                                     float speed, float smoothing,
+                                     nxinput_cursor_state *state) {
   float magnitude;
   float desired_x;
   float desired_y;
@@ -184,14 +185,13 @@ void nxinput_core_cursor_update(nxinput_core_pad *pad, float delta_seconds,
   if (delta_seconds > 0.1f)
     delta_seconds = 0.1f;
 
-  magnitude = sqrtf(pad->right_x * pad->right_x +
-                    pad->right_y * pad->right_y);
+  magnitude = sqrtf(input_x * input_x + input_y * input_y);
   magnitude = clampf(magnitude, 0.0f, 1.0f);
 
   /* Multiplying the already radial-normalized vector by its magnitude gives a
    * quadratic response: precise near center, full speed at the rim. */
-  desired_x = pad->right_x * magnitude * speed;
-  desired_y = pad->right_y * magnitude * speed;
+  desired_x = input_x * magnitude * speed;
+  desired_y = input_y * magnitude * speed;
   if (smoothing <= 0.0f || delta_seconds <= 0.0f)
     alpha = delta_seconds > 0.0f ? 1.0f : 0.0f;
   else
@@ -235,4 +235,13 @@ void nxinput_core_cursor_update(nxinput_core_pad *pad, float delta_seconds,
   state->y = pad->cursor_y;
   state->velocity_x = pad->cursor_velocity_x;
   state->velocity_y = pad->cursor_velocity_y;
+}
+
+void nxinput_core_cursor_update(nxinput_core_pad *pad, float delta_seconds,
+                                float speed, float smoothing,
+                                nxinput_cursor_state *state) {
+  if (!pad)
+    return;
+  nxinput_core_cursor_update_axes(pad, pad->right_x, pad->right_y,
+                                  delta_seconds, speed, smoothing, state);
 }

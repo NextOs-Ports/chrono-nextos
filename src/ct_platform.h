@@ -14,6 +14,8 @@ void ct_start_shutdown_watchdog(int seconds);
 int ct_single_instance_lock(const char *self_path);
 void ct_single_instance_unlock(void);
 
+struct _SDL_GameController;
+void ct_exit_chord_set_controller(struct _SDL_GameController *pad);
 void ct_exit_chord_open(void);
 void ct_exit_chord_poll(void);
 void ct_exit_chord_close(void);

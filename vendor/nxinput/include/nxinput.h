@@ -12,7 +12,7 @@ extern "C" {
 #endif
 
 #define NXINPUT_API_VERSION 1u
-#define NXINPUT_VERSION "0.1.0"
+#define NXINPUT_VERSION "0.3.1"
 
 #define NXINPUT_MAX_PADS 4u
 #define NXINPUT_NAME_MAX 128u
@@ -52,6 +52,34 @@ typedef enum nxinput_button {
   (UINT32_C(1) << (unsigned int)(button))
 #define NXINPUT_BUTTON_MASK_ALL \
   ((UINT32_C(1) << (unsigned int)NXINPUT_BUTTON_COUNT) - UINT32_C(1))
+
+/* Physical logical bindings exposed by the active SDL_GameController mapping.
+ * These facts are per pad and never inferred from a device name, GUID or the
+ * host-wide PortMaster stick-count hint. */
+typedef enum nxinput_pad_capability {
+  NXINPUT_PAD_CAP_DPAD = UINT32_C(1) << 0,
+  NXINPUT_PAD_CAP_LEFT_STICK = UINT32_C(1) << 1,
+  NXINPUT_PAD_CAP_RIGHT_STICK = UINT32_C(1) << 2,
+  NXINPUT_PAD_CAP_LEFT_TRIGGER = UINT32_C(1) << 3,
+  NXINPUT_PAD_CAP_RIGHT_TRIGGER = UINT32_C(1) << 4
+} nxinput_pad_capability;
+
+#define NXINPUT_PAD_CAP_MASK_ALL                                           \
+  (NXINPUT_PAD_CAP_DPAD | NXINPUT_PAD_CAP_LEFT_STICK |                    \
+   NXINPUT_PAD_CAP_RIGHT_STICK | NXINPUT_PAD_CAP_LEFT_TRIGGER |           \
+   NXINPUT_PAD_CAP_RIGHT_TRIGGER)
+
+typedef enum nxinput_pad_option {
+  NXINPUT_PAD_OPTION_NONE = 0,
+  /* Duplicate a complete D-pad into the returned left-stick values only when
+   * neither physical left-stick axis is bound. The stored/raw state and D-pad
+   * buttons remain unchanged. */
+  NXINPUT_PAD_OPTION_DPAD_LEFT_STICK_IF_MISSING = UINT32_C(1) << 0
+} nxinput_pad_option;
+
+#define NXINPUT_PAD_OPTION_MASK_ALL \
+  NXINPUT_PAD_OPTION_DPAD_LEFT_STICK_IF_MISSING
+#define NXINPUT_ANALOG_STICKS_HINT_UNKNOWN (-1)
 
 typedef struct nxinput_config {
   uint32_t api_version;
@@ -115,6 +143,17 @@ typedef struct nxinput_cursor_state {
   float velocity_y;
 } nxinput_cursor_state;
 
+typedef enum nxinput_cursor_option {
+  NXINPUT_CURSOR_OPTION_NONE = 0,
+  /* In a proven MENU context only, use the real left stick for cursor motion
+   * when the opened controller has no reachable right-stick axes. This does
+   * not change click binding and never applies in GAMEPLAY. */
+  NXINPUT_CURSOR_OPTION_LEFT_STICK_IF_RIGHT_MISSING = UINT32_C(1) << 0
+} nxinput_cursor_option;
+
+#define NXINPUT_CURSOR_OPTION_MASK_ALL \
+  NXINPUT_CURSOR_OPTION_LEFT_STICK_IF_RIGHT_MISSING
+
 /* Fill a complete versioned configuration with conservative handheld defaults. */
 void nxinput_config_init(nxinput_config *config);
 
@@ -138,8 +177,26 @@ void nxinput_set_focus(nxinput_context *input, int focused);
 unsigned int nxinput_connected_count(const nxinput_context *input);
 int nxinput_first_connected(const nxinput_context *input);
 int nxinput_find_instance(const nxinput_context *input, int32_t instance_id);
+/* 0.3.2: the SDL_GameController behind a slot (NULL when disconnected), so an
+ * adapter can read binds -- e.g. to derive the physical SELECT/START evdev
+ * codes for nxinput_evdev_chord.h. Never close or remap it. */
+SDL_GameController *nxinput_pad_sdl_controller(const nxinput_context *input,
+                                               unsigned int slot);
 int nxinput_get_pad(const nxinput_context *input, unsigned int slot,
                     nxinput_pad_state *state);
+
+/* Additive API: nxinput_get_pad() remains the raw/default-off view. An adapter
+ * must request options for each read, so no global state can silently change
+ * another consumer or the nxcompat receipt path. */
+int nxinput_get_pad_with_options(const nxinput_context *input,
+                                 unsigned int slot, uint32_t options,
+                                 nxinput_pad_state *state);
+int nxinput_get_pad_capabilities(const nxinput_context *input,
+                                 unsigned int slot, uint32_t *capabilities);
+
+/* PortMaster's validated integrated-handheld hint: -1 when unavailable, else
+ * 0, 1 or 2. It is host-wide diagnostic context, never a per-pad override. */
+int nxinput_host_analog_sticks_hint(const nxinput_context *input);
 
 /* A short down/up pair remains in pressed_latch until consumed. Consumption is
  * mask-selective and does not alter the current down state. */
@@ -165,6 +222,11 @@ int nxinput_cursor_warp(nxinput_context *input, unsigned int slot, float x,
                         float y);
 int nxinput_cursor_update(nxinput_context *input, unsigned int slot,
                           float delta_seconds, nxinput_cursor_state *state);
+int nxinput_cursor_update_with_options(nxinput_context *input,
+                                       unsigned int slot,
+                                       float delta_seconds,
+                                       uint32_t options,
+                                       nxinput_cursor_state *state);
 int nxinput_cursor_consume_click(nxinput_context *input, unsigned int slot);
 
 #ifdef __cplusplus

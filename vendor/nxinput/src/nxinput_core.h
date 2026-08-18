@@ -57,5 +57,9 @@ void nxinput_core_cursor_reset_motion(nxinput_core_pad *pad,
 void nxinput_core_cursor_update(nxinput_core_pad *pad, float delta_seconds,
                                 float speed, float smoothing,
                                 nxinput_cursor_state *state);
+void nxinput_core_cursor_update_axes(nxinput_core_pad *pad, float input_x,
+                                     float input_y, float delta_seconds,
+                                     float speed, float smoothing,
+                                     nxinput_cursor_state *state);
 
 #endif

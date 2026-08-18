@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.1.0
+
+### Corrigido — saída SELECT+START (adota o chord canônico do framework)
+- Remove a implementação própria de combo por evdev do `ct_platform.c` (que
+  agregava todos os `/dev/input` globalmente e podia disparar com **START
+  sozinho** no Knulli/família H700) e passa a usar o módulo canônico
+  `nxinput_evdev_chord.h` v2 (nxinput 0.4.0):
+  - **SDL é a autoridade** quando há pad aberto: o chord é
+    `SDL_GameControllerGetButton(BACK) && (START)` por **estado** (+ botão cru do
+    joystick nos índices do mapping). Dispara na hora, sem hold longo.
+  - **evdev cru só como fallback** quando não há pad SDL; **nunca** vigia
+    `BTN_SELECT/START` literais com pad aberto (na família H700 esses códigos são
+    L2/R2).
+- Sincroniza o `nxinput` vendorizado para 0.4.0 e adiciona `ct_framework_sdl_controller()`.
+- Diagnóstico de controle completo no log (mapping, binds, códigos evdev).
+- Provado no device (R36T/K36S, GO-Super, lançado pelo ES): **START sozinho NÃO
+  sai**; **SELECT+START sai limpo (status 0, sem SIGSEGV)** com `evdev fallback
+  muted`.
+
 ## 1.0.8
 
 - Published the muOS installer correction under a new version instead of
