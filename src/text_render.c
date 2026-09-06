@@ -19,8 +19,13 @@
  *   1) CHRONO_FONT (diagnostico/override do usuario);
  *   2) a fonte de licenca livre que acompanha o port (fonts/, SIL OFL 1.1);
  *   3) o layout historico NextOS (Roboto ao lado do binario);
- *   4) qualquer sans do proprio FIRMWARE, na ordem de semelhanca com a Roboto.
+ *   4) a MESMA Noto Sans embutida no executavel (font_embed.c) -- piso
+ *      garantido: nao depende de arquivo ao lado nem do firmware (o muOS nao
+ *      tem nenhuma das fontes abaixo e o 1.1.1 nao embalava fonts/);
+ *   5) qualquer sans do proprio FIRMWARE, na ordem de semelhanca com a Roboto.
  */
+extern const unsigned char chrono_embedded_font[];
+extern const unsigned char chrono_embedded_font_end[];
 static const char *const kFirmwareFonts[] = {
   "/usr/share/fonts/truetype/roboto/Roboto-Regular.ttf",
   "/usr/share/fonts/truetype/roboto/unhinted/RobotoTTF/Roboto-Regular.ttf",
@@ -66,6 +71,17 @@ static int ensure_ft(void) {
       snprintf(path, sizeof path, "%s/%s", gamedir, kLocal[i]);
       if (try_face(path)) { g_ready = 1; return 1; }
     }
+  }
+  {
+    FT_Long size = (FT_Long)(chrono_embedded_font_end - chrono_embedded_font);
+    if (size > 0 &&
+        FT_New_Memory_Face(g_ft, chrono_embedded_font, size, 0, &g_face) == 0) {
+      debugPrintf("text_render: fonte EMBUTIDA (Noto Sans, %ld bytes) glyphs=%ld\n",
+                  (long)size, (long)g_face->num_glyphs);
+      g_ready = 1; return 1;
+    }
+    debugPrintf("text_render: fonte embutida rejeitada pelo FreeType (size=%ld)\n",
+                (long)size);
   }
   for (int i = 0; kFirmwareFonts[i]; i++)
     if (try_face(kFirmwareFonts[i])) { g_ready = 1; return 1; }

@@ -18,8 +18,9 @@ GLIBC 2.27 so it runs on the low-glibc firmwares of the supported handhelds.
 The bundled UI font is **Noto Sans Regular**, Copyright 2022 The Noto Project
 Authors, under the SIL Open Font License 1.1 (`fonts/OFL.txt`). It replaces the
 Android system font (Roboto) that the game expects but does not ship; no font
-from an Android device is redistributed. When the firmware already provides a
-suitable sans font, that one is preferred at runtime.
+from an Android device is redistributed. The same font is embedded in the
+executable as the guaranteed fallback; `CHRONO_FONT` or the `fonts/` directory
+take precedence, and a firmware sans font is only used if all of those fail.
 
 NXExtract (the vendored BYO-data installer under `nxextract/`) is distributed
 under the MIT license — see `licenses/NXExtract-MIT.txt`; version 1.2.6 and the

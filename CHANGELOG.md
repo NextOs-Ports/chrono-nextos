@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.1.2
+
+### Corrigido — menu sem texto no muOS (RG40XX-H)
+- O zip 1.1.1 não embalava `chrono/fonts/` (o renderizador de manifesto só
+  conhece o conjunto de arquivos do framework), e o muOS não traz nenhuma das
+  fontes de firmware que o loader procura (Roboto/Noto/DejaVu/Liberation/
+  FreeSans). Sem fonte, `createTextBitmap` devolvia bitmap vazio e a UI ficava
+  sem texto. No ArkOS/dArkOS/NextOS a DejaVu do firmware mascarava o defeito.
+- A Noto Sans (SIL OFL 1.1) agora vai **embutida no executável** (`.incbin`,
+  `FT_New_Memory_Face`) como piso garantido — o texto não depende mais de
+  arquivo ao lado do binário nem do firmware — e `fonts/` volta ao pacote.
+  Ordem: `CHRONO_FONT` → `fonts/` do port → fonte embutida → fonte do firmware.
+- O log passa a dizer qual fonte foi usada (`text_render: fonte ...`).
+
+### Corrigido — não abria no ROCKNIX com Mesa/Panfrost (RG-DS)
+- `NXLOADER prepare libchrono.so failed=unresolved strong import
+  unresolved=eglGetProcAddress` (mais `glMapBufferOES`/`glUnmapBufferOES`):
+  a `libGLESv2.so.2` do Mesa não exporta esses símbolos e a `libEGL` é aberta
+  pela SDL com `RTLD_LOCAL`, então `dlsym(RTLD_DEFAULT)` não os enxerga. Nos
+  blobs Mali tudo vive na `libMali` e por isso só o Mesa quebrava.
+- Os símbolos GL/EGL do host agora são resolvidos por `dlsym` →
+  `SDL_GL_GetProcAddress` (contexto já aberto) → `libEGL.so.1`; se ainda
+  faltarem, `eglGetProcAddress` recebe um adaptador que consulta as mesmas
+  fontes e `gl{Map,Unmap}BufferOES` recebem stubs (NULL/GL_FALSE), em vez de
+  derrubar o carregamento inteiro.
+- Bancada: `CHRONO_GLPROC_FORCE_SDL=1` ignora o `dlsym` e prova o caminho do
+  Mesa num aparelho com blob Mali.
+
+### Conhecido
+- Com o APK PT-BR o nome padrão não aparece na tela de nome; confirmar
+  "Aceitar" segue com "Crono". Só apresentação.
+
 ## 1.1.1
 
 ### Corrigido — o jogo não salvava com o APK traduzido (2.1.3 PT-BR)

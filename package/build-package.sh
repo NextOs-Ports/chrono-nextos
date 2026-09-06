@@ -55,6 +55,25 @@ fi
 python3 -B "$RENDER" --port-dir "$PORT_DIR" --framework-root "$FRAMEWORK_ROOT" \
   --source-url "$SOURCE_URL" --max-glibc "$MAX_GLIBC" || fail 'manifest render failed'
 
+# The renderer only knows the framework-wide file set; the UI font (Noto Sans,
+# SIL OFL 1.1) is port payload that 1.1.1 silently left out of the archive --
+# menus had no text on muOS, which ships none of the firmware fonts we probe.
+python3 -B - "$MANIFEST" "$PORT_DIR" <<'PY' || fail 'font payload entries failed'
+import hashlib, json, pathlib, sys
+manifest = pathlib.Path(sys.argv[1]); port = pathlib.Path(sys.argv[2])
+data = json.loads(manifest.read_text(encoding="utf-8"))
+pid = data["package"]["id"]
+for name in ("NotoSans-Regular.ttf", "OFL.txt"):
+    src = port / "fonts" / name
+    if not src.is_file():
+        raise SystemExit("fonts/%s missing from the port tree" % name)
+    data["files"].append({
+        "source": "fonts/%s" % name, "target": "%s/fonts/%s" % (pid, name),
+        "kind": "payload", "mode": "0644",
+        "sha256": hashlib.sha256(src.read_bytes()).hexdigest()})
+manifest.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+
 python3 -B "$NXRELEASE" validate --manifest "$MANIFEST" --max-glibc "$MAX_GLIBC" ||
   fail 'manifest validation failed'
 

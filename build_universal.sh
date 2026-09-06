@@ -103,12 +103,17 @@ compile_source() {
     -idirafter /nxsr/usr/include/SDL2 \
     -idirafter /nxsr/usr/include/freetype2 \
     -O2 -fPIC -fno-omit-frame-pointer \
+    -Wa,-I/repo \
     -Wno-int-conversion -Wno-incompatible-pointer-types \
     -Wno-unused-parameter -Wno-unused-function \
     -c "$source" -o "$object"
   OBJS+=("$object")
 }
 
+# font_embed.c faz .incbin de fonts/NotoSans-Regular.ttf (piso de texto da UI:
+# o muOS nao tem fonte de firmware e o 1.1.1 nao embalava fonts/).
+[ -f fonts/NotoSans-Regular.ttf ] ||
+  { echo "fonts/NotoSans-Regular.ttf ausente: a fonte embutida e' obrigatoria" >&2; exit 1; }
 for source in src/*.c; do
   compile_source chrono "$source"
 done

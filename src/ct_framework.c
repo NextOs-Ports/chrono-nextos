@@ -471,6 +471,65 @@ static const char *const ct_explicit_host_symbols[] = {
     "pthread_cond_init", "putchar", "setjmp", "sqrt", "sqrtf",
 };
 
+/* Mesa/Panfrost (ROCKNIX no RG-DS, log de 05/09): a libGLESv2.so.2 do Mesa
+ * NAO exporta eglGetProcAddress nem gl{Map,Unmap}BufferOES, e a libEGL e'
+ * aberta pela SDL com RTLD_LOCAL -- dlsym(RTLD_DEFAULT) nao a enxerga. Nos
+ * blobs ARM (Mali) tudo vive na libMali e o dlsym basta. O contexto GL ja esta
+ * aberto quando o registry nasce, entao SDL_GL_GetProcAddress (que no Mesa vai
+ * ao eglGetProcAddress real) e' a segunda fonte; libEGL.so.1 por dlopen, a
+ * terceira. Se mesmo assim faltar, o import STRONG da libchrono recebe um
+ * adaptador nosso em vez de derrubar o carregamento inteiro. */
+static void *ct_host_gl_proc(const char *name) {
+  static void *egl_handle;
+  void *address = NULL;
+  if (!name || !*name)
+    return NULL;
+  if (!getenv("CHRONO_GLPROC_FORCE_SDL"))
+    address = dlsym(RTLD_DEFAULT, name);
+  if (!address)
+    address = SDL_GL_GetProcAddress(name);
+  if (!address) {
+    if (!egl_handle)
+      egl_handle = dlopen("libEGL.so.1", RTLD_NOW | RTLD_GLOBAL);
+    if (egl_handle)
+      address = dlsym(egl_handle, name);
+  }
+  return address;
+}
+
+static void *ct_eglGetProcAddress_adapter(const char *name) {
+  return ct_host_gl_proc(name);
+}
+
+static void *ct_glMapBufferOES_stub(unsigned int target, unsigned int access) {
+  static int logged;
+  (void)target; (void)access;
+  if (!logged++)
+    debugPrintf("NXLOADER glMapBufferOES indisponivel no host: devolvendo NULL\n");
+  return NULL;
+}
+
+static unsigned char ct_glUnmapBufferOES_stub(unsigned int target) {
+  (void)target;
+  return 0;
+}
+
+static int ct_symbol_is_gl(const char *name) {
+  return (name[0] == 'g' && name[1] == 'l' && name[2] >= 'A' && name[2] <= 'Z') ||
+         (name[0] == 'e' && name[1] == 'g' && name[2] == 'l' && name[3] >= 'A' &&
+          name[3] <= 'Z');
+}
+
+static void *ct_explicit_symbol_fallback(const char *name) {
+  if (!strcmp(name, "eglGetProcAddress"))
+    return (void *)&ct_eglGetProcAddress_adapter;
+  if (!strcmp(name, "glMapBufferOES"))
+    return (void *)&ct_glMapBufferOES_stub;
+  if (!strcmp(name, "glUnmapBufferOES"))
+    return (void *)&ct_glUnmapBufferOES_stub;
+  return NULL;
+}
+
 static int ct_loader_registry_create(ct_framework *framework,
                                      const DynLibFunction *imports,
                                      size_t import_count) {
@@ -491,12 +550,26 @@ static int ct_loader_registry_create(ct_framework *framework,
     framework->host_symbols[index].address = imports[index].func;
   }
   for (index = 0; index < extra_count; ++index) {
-    void *address = dlsym(RTLD_DEFAULT, ct_explicit_host_symbols[index]);
+    const char *name = ct_explicit_host_symbols[index];
+    const char *origin = "dlsym";
+    void *address = NULL;
+    if (ct_symbol_is_gl(name)) {
+      address = ct_host_gl_proc(name);
+      origin = "gl-proc";
+      if (!address) {
+        address = ct_explicit_symbol_fallback(name);
+        origin = "adapter";
+      }
+    } else {
+      address = dlsym(RTLD_DEFAULT, name);
+    }
     if (!address) {
-      debugPrintf("NXLOADER optional host symbol unavailable: %s\n",
-                  ct_explicit_host_symbols[index]);
+      debugPrintf("NXLOADER optional host symbol unavailable: %s\n", name);
       continue;
     }
+    if (strcmp(origin, "dlsym") != 0 &&
+        (!strcmp(origin, "adapter") || getenv("CHRONO_GLPROC_FORCE_SDL")))
+      debugPrintf("NXLOADER host symbol %s via %s\n", name, origin);
     framework->host_symbols[import_count + added_count].name =
         ct_explicit_host_symbols[index];
     framework->host_symbols[import_count + added_count].address =

@@ -88,7 +88,7 @@
         "libpthread.so.0"
       ],
       "provenance": "port build script; framework pinned by FRAMEWORK-PIN.json",
-      "sha256": "d66a377a6d970711e25b645355ed0f701f1d9b67c352f75fb323da2bc862bd99",
+      "sha256": "8ce8465a0506e67ce7c5017686568ed5ecc9329c0737ed2bb278617f5940c735",
       "soname": null,
       "source": "chrono-nextos",
       "target": "chrono/chrono-nextos"
@@ -146,14 +146,14 @@
     {
       "kind": "license-notice",
       "mode": "0644",
-      "sha256": "02ee78acc3ebe47d7967f61a9aead99cbfcd72174b40e29964910cb3548b22de",
+      "sha256": "02c581042ec368b9fe5f549e84082bc729ea9422e8f9b87b0c14c67509572535",
       "source": "NOTICE.md",
       "target": "chrono/NOTICE.md"
     },
     {
       "kind": "payload",
       "mode": "0644",
-      "sha256": "cc52f678848b814373757b460383bf61960e4943c203735adde0a350b3e50989",
+      "sha256": "77123b8e4bdbd54505bf6e8021527ac60281602a06fe307564532c4dba39dbca",
       "source": "version.txt",
       "target": "chrono/version.txt"
     },
@@ -227,6 +227,20 @@
       "sha256": "4304275f30e076c76abdc0f280f0fdd5537f1ac700953ba1908e29a64d531919",
       "source": "nxextract-version.txt",
       "target": "chrono/nxextract-version.txt"
+    },
+    {
+      "kind": "payload",
+      "mode": "0644",
+      "sha256": "478c558ea716033cd60c03438f628dfa75694dcf6b5f6d505a2f05fd2b4f3823",
+      "source": "fonts/NotoSans-Regular.ttf",
+      "target": "chrono/fonts/NotoSans-Regular.ttf"
+    },
+    {
+      "kind": "payload",
+      "mode": "0644",
+      "sha256": "6612e095d5f79fc73a2a44a45476d402ab234230e8084bbb206d663489648482",
+      "source": "fonts/OFL.txt",
+      "target": "chrono/fonts/OFL.txt"
     }
   ],
   "nxextract": {
@@ -262,7 +276,7 @@
     },
     "port_dir": "chrono",
     "profile": "universal-portmaster",
-    "version": "1.1.1"
+    "version": "1.1.2"
   },
   "portmaster_metadata": {
     "gameinfo_xml": {
