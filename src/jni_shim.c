@@ -99,6 +99,7 @@ enum {
   MID_PACKAGE_NAME, MID_DEVICE_MODEL, MID_OBB_PATH, MID_ASSETS_PATH,
   MID_VERSION, MID_DPI, MID_EXIT, MID_OPENGL_VERSION,
   MID_CREATE_TEXT_BITMAP, MID_LOCATION_CODE,
+  MID_VIDEO_CREATE, MID_VIDEO_START,
   MID_TAG_COUNT
 };
 static int g_method_tags[MID_TAG_COUNT];
@@ -108,6 +109,35 @@ static intptr_t jni_stub(void) { return 0; }
 static jint jni_GetVersion(void *env) { return 0x00010006; }
 
 static int g_jni_log = 0;
+
+/* Cocos2dxVideoHelper: a build do jogo com filmes (2.1.3 PT-BR, DemoMovieScene
+ * no titulo, cutscenes) cria um VideoPlayer e espera o evento COMPLETED vindo
+ * do Java. Sem player nenhum a cena ficava PRETA para sempre (medido no
+ * dArkOSRE: createVideoWidget/setVideoUrl/startVideo e depois nada). Cada
+ * widget recebe um indice proprio e todo start/resume e' concluido no quadro
+ * seguinte, na thread do render (como o runOnGLThread do Android). O filme e'
+ * pulado; o jogo segue. Nenhum decoder e' fingido. */
+#define VIDEO_EVENT_COMPLETED 3
+static int g_video_next_index;
+static int g_video_pending[16];
+static int g_video_pending_n;
+static void (*g_video_callback)(void *env, void *clazz, int index, int event);
+void jni_shim_video_pump(void *env) {
+  if (!g_video_pending_n) return;
+  if (!g_video_callback)
+    g_video_callback = (void *)ct_framework_find_active_export(
+        "Java_org_cocos2dx_lib_Cocos2dxVideoHelper_nativeExecuteVideoCallback");
+  int n = g_video_pending_n; g_video_pending_n = 0;
+  for (int i = 0; i < n; i++) {
+    debugPrintf("jni_shim: video widget %d -> COMPLETED (sem decoder, filme pulado)%s\n",
+                g_video_pending[i], g_video_callback ? "" : " [callback ausente]");
+    if (g_video_callback) g_video_callback(env, NULL, g_video_pending[i], VIDEO_EVENT_COMPLETED);
+  }
+}
+static void video_queue_complete(int index) {
+  if (g_video_pending_n < (int)(sizeof g_video_pending / sizeof *g_video_pending))
+    g_video_pending[g_video_pending_n++] = index;
+}
 static void *jni_FindClass(void *env, const char *name) {
   if (g_jni_log) debugPrintf("JNI FindClass(%s)\n", name);
   static int fake_class; return &fake_class;
@@ -129,6 +159,8 @@ static int tag_for_method(const char *name) {
   if (strstr(name, "DPI") || strstr(name, "getDPI")) return MID_DPI;
   if (strstr(name, "OpenGLVersion") || strstr(name, "GLVersion")) return MID_OPENGL_VERSION;
   if (strcmp(name, "exit") == 0 || strstr(name, "terminateProcess")) return MID_EXIT;
+  if (strcmp(name, "createVideoWidget") == 0) return MID_VIDEO_CREATE;
+  if (strcmp(name, "startVideo") == 0 || strcmp(name, "resumeVideo") == 0) return MID_VIDEO_START;
   return MID_GENERIC;
 }
 static void *jni_GetMethodID(void *env, void *clazz, const char *name, const char *sig) {
@@ -242,6 +274,11 @@ static jint jni_CallIntMethod(void *env, void *obj, void *mid, ...) {
 }
 static jint jni_CallStaticIntMethod(void *env, void *clazz, void *mid, ...) {
   if (mid == &g_method_tags[MID_DPI]) return 160;
+  if (mid == &g_method_tags[MID_VIDEO_CREATE]) {
+    int index = g_video_next_index++;
+    if (g_jni_log) debugPrintf("JNI createVideoWidget -> %d\n", index);
+    return index;
+  }
   if (mid == &g_method_tags[MID_LOCATION_CODE]) {
     int v = chrono_location_code();
     if (g_jni_log) debugPrintf("JNI getLocationCode -> %d\n", v);
@@ -250,6 +287,9 @@ static jint jni_CallStaticIntMethod(void *env, void *clazz, void *mid, ...) {
   return 0;
 }
 
+static jint jni_CallStaticIntMethodV(void *env, void *clazz, void *mid, va_list a) {
+  return jni_CallStaticIntMethod(env, clazz, mid);
+}
 static void jni_CallVoidMethod(void *env, void *obj, void *mid, ...) {
   /* Quit da engine converge no MESMO shutdown do SELECT+START/SIGTERM:
      pede a saida e deixa o loop principal chamar nativeOnPause (save). */
@@ -257,9 +297,21 @@ static void jni_CallVoidMethod(void *env, void *obj, void *mid, ...) {
 }
 static void jni_CallStaticVoidMethod(void *env, void *clazz, void *mid, ...) {
   if (mid == &g_method_tags[MID_EXIT]) { debugPrintf("jni_shim: static exit()\n"); ct_request_exit("engine exit()"); }
+  if (mid == &g_method_tags[MID_VIDEO_START]) {
+    va_list ap; va_start(ap, mid); int index = va_arg(ap, int); va_end(ap);
+    video_queue_complete(index);
+  }
 }
-static void jni_CallStaticVoidMethodV(void *env, void *clazz, void *mid, va_list a) {}
-static void jni_CallStaticVoidMethodA(void *env, void *clazz, void *mid, const void *a) {}
+/* O wrapper C++ de jni.h transforma CallStaticVoidMethod(...) em
+   CallStaticVoidMethodV(va_list): e' por AQUI que o JniHelper do Cocos chega. */
+static void jni_CallStaticVoidMethodV(void *env, void *clazz, void *mid, va_list a) {
+  if (mid == &g_method_tags[MID_EXIT]) { debugPrintf("jni_shim: static exit() [V]\n"); ct_request_exit("engine exit()"); }
+  if (mid == &g_method_tags[MID_VIDEO_START]) { int index = va_arg(a, int); video_queue_complete(index); }
+}
+static void jni_CallStaticVoidMethodA(void *env, void *clazz, void *mid, const void *a) {
+  if (mid == &g_method_tags[MID_EXIT]) { debugPrintf("jni_shim: static exit() [A]\n"); ct_request_exit("engine exit()"); }
+  if (mid == &g_method_tags[MID_VIDEO_START] && a) video_queue_complete(*(const int *)a);
+}
 
 static void *jni_NewStringUTF(void *env, const char *str) {
   /* precisa sobreviver -> strdup (vaza pouco, e ok p/ poucas chamadas) */
@@ -370,7 +422,7 @@ void jni_shim_init(void **out_vm, void **out_env) {
   jni_env_vtable[118] = (uintptr_t)jni_CallStaticBooleanMethodV;
   jni_env_vtable[119] = (uintptr_t)jni_CallStaticBooleanMethodA;
   jni_env_vtable[129] = (uintptr_t)jni_CallStaticIntMethod;
-  jni_env_vtable[130] = (uintptr_t)jni_CallStaticIntMethod;
+  jni_env_vtable[130] = (uintptr_t)jni_CallStaticIntMethodV;
   jni_env_vtable[131] = (uintptr_t)jni_CallStaticIntMethod;
   jni_env_vtable[141] = (uintptr_t)jni_CallStaticVoidMethod;
   jni_env_vtable[142] = (uintptr_t)jni_CallStaticVoidMethodV;

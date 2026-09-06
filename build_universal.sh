@@ -22,11 +22,19 @@ export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1785628800}
 
 if [ "${CT_BUSTER_IN_CONTAINER:-0}" != "1" ]; then
   NEXTOS_ROOT=${NEXTOS_ROOT:-"$HOME/NextOS-Elite-Edition"}
-  NEXTOS_TOOLCHAIN=$(
+  # Only a toolchain whose sysroot really carries the SDL2 headers is usable:
+  # an in-progress NextOS build leaves a skeleton toolchain that sorts last.
+  NEXTOS_TOOLCHAIN=""
+  for candidate in $(
     find -H "$NEXTOS_ROOT" -maxdepth 2 -type d \
       -path '*/build.NextOS-Retro-Elite-Edition-Amlogic-old.aarch64-*/toolchain' \
-      -print | sort -V | tail -1
-  )
+      -print | sort -V -r
+  ); do
+    if [ -f "$candidate/aarch64-libreelec-linux-gnu/sysroot/usr/include/SDL2/SDL.h" ]; then
+      NEXTOS_TOOLCHAIN=$candidate
+      break
+    fi
+  done
   [ -n "$NEXTOS_TOOLCHAIN" ] ||
     { echo "toolchain NextOS atual nao encontrado em $NEXTOS_ROOT" >&2; exit 1; }
   NEXTOS_SYSROOT=$NEXTOS_TOOLCHAIN/aarch64-libreelec-linux-gnu/sysroot

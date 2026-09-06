@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.1
+
+### Corrigido — o jogo não salvava com o APK traduzido (2.1.3 PT-BR)
+- O launcher único (desde a 1.0.5) deixou de criar `chrono/userdata/`; o
+  `run.sh` da 1.0.3 fazia `mkdir -p`. A build 2.1.3 (usada pelas traduções
+  PT-BR) grava o save direto nesse diretório sem criá-lo, então o `fopen`
+  falhava em silêncio e o menu nunca oferecia "Continuar". A retail 2.1.4/2.1.5
+  cria o diretório sozinha, por isso só o APK traduzido sofria. O loader agora
+  cria `userdata/` antes de entregar o caminho ao jogo.
+- Medido no dArkOSRE (K36S) com o APK PT-BR 2.1.3: `Chrono_sp_6_0.dat`,
+  `meta.bin` e `common.bin` gravados ao chegar ao quarto do Crono; segunda
+  abertura mostra "Continuar" e carrega "A Feira Milenar / TEMPO 00:02".
+
+### Corrigido — tela preta no filme de demonstração do título
+- Builds com `Cocos2dxVideoHelper` (a 2.1.3 abre o `DemoMovieScene` após
+  ~100 s parado no título) esperavam o evento COMPLETED do player Java, que o
+  shim nunca enviava: a tela ficava preta até sair. O shim agora dá um índice
+  a cada widget de vídeo e conclui todo `startVideo`/`resumeVideo` no quadro
+  seguinte (o filme é pulado; nenhum decoder é fingido).
+
+### Build
+- `build_universal.sh` só aceita um toolchain NextOS cujo sysroot tenha os
+  headers da SDL2 (um build 1.2.0 em andamento deixava um esqueleto).
+- Bancada: `CHRONO_TAPFILE=<arquivo>` injeta um toque no centro (passa o
+  "Toque para começar" sem tela sensível).
+
+### Conhecido
+- Com o APK PT-BR o nome padrão não aparece na tela de nome; confirmar
+  "Aceitar" segue com "Crono". Só apresentação.
+
 ## 1.1.0
 
 ### Corrigido — saída SELECT+START (adota o chord canônico do framework)

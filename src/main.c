@@ -11,6 +11,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <SDL2/SDL.h>
@@ -411,6 +413,15 @@ int main(int argc, char *argv[]) {
   static char apk_path[1024], writable_path[1024], assets_path[1024];
   snprintf(apk_path, sizeof apk_path, "%s/base.apk", ct_gamedir());
   snprintf(writable_path, sizeof writable_path, "%s/userdata/", ct_gamedir());
+  /* No Android o diretorio de arquivos do app SEMPRE existe; aqui quem o
+   * garante e' o port. A build 2.1.3 (PT-BR) nao chama mkdir antes de gravar
+   * o save: sem o diretorio, o fopen falha em silencio e "o jogo nao salva"
+   * (medido no dArkOSRE, 05/09/2026). Criar sempre, antes do JNI ver o caminho. */
+  if (mkdir(writable_path, 0777) == 0)
+    debugPrintf("userdata criado: %s\n", writable_path);
+  else if (errno != EEXIST)
+    debugPrintf("AVISO: nao consegui criar %s (errno=%d %s): o save vai falhar\n",
+                writable_path, errno, strerror(errno));
   snprintf(assets_path, sizeof assets_path, "%s/assets/", ct_gamedir());
   jni_set_writable_path(writable_path);
   jni_set_assets_path(assets_path);
@@ -550,6 +561,21 @@ int main(int argc, char *argv[]) {
     }
     /* refill de audio agora roda na thread dedicada do opensles_shim
        (desacoplado do framerate) -> sem gagueira por hitch de frame. */
+    /* CHRONO_TAPFILE=<path>: bancada. Se o arquivo existir, injeta UM toque
+       no centro (begin neste quadro, end no seguinte) e o apaga. */
+    {
+      static const char *tapfile; static int tap_state;
+      if (!tapfile) { const char *e = getenv("CHRONO_TAPFILE"); tapfile = e && *e ? e : "-"; }
+      if (tapfile[0] != '-') {
+        if (tap_state == 1) { if (nativeTouchesEnd) nativeTouchesEnd(g_env, NULL, 0, w/2.0f, h/2.0f); tap_state = 0; }
+        else if (access(tapfile, F_OK) == 0) {
+          unlink(tapfile);
+          if (nativeTouchesBegin) { nativeTouchesBegin(g_env, NULL, 0, w/2.0f, h/2.0f); tap_state = 1; }
+          debugPrintf("TAPFILE: toque no centro\n");
+        }
+      }
+    }
+    jni_shim_video_pump(g_env);
     nativeRender(g_env, NULL);
 
     /* CHRONO_SHOTS="200,600,1200": captura glReadPixels nesses frames, SEM
